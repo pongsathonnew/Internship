@@ -239,6 +239,50 @@ st.markdown(
         padding: 70px 0;
         color: #999;
     }
+
+    /* ---------- Form input fields: clear white background, dark text ---------- */
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stTextArea"] textarea,
+    div[data-testid="stDateInput"] input,
+    div[data-testid="stNumberInput"] input {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border: 1px solid #cfd8d4 !important;
+        border-radius: 8px !important;
+        caret-color: #111111 !important;
+    }
+    div[data-testid="stTextInput"] input::placeholder,
+    div[data-testid="stTextArea"] textarea::placeholder {
+        color: #8a938e !important;
+    }
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border: 1px solid #cfd8d4 !important;
+        border-radius: 8px !important;
+    }
+    div[data-testid="stSelectbox"] ul,
+    div[data-testid="stMultiSelect"] ul {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+    }
+    div[data-testid="stFileUploaderDropzone"] {
+        background-color: #ffffff !important;
+        border: 1px dashed #b9c4be !important;
+        border-radius: 10px !important;
+    }
+    div[data-testid="stFileUploaderDropzone"] * {
+        color: #333333 !important;
+    }
+    div[data-testid="stDateInput"] svg { fill: #333333 !important; }
+
+    /* labels above the fields, kept readable on both light & dark page sections */
+    .st-key-page_content label,
+    .stForm label {
+        color: #1c231f !important;
+        font-weight: 600 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
