@@ -1,0 +1,673 @@
+"""
+Portfolio สหกิจศึกษา (Cooperative Education Portfolio)
+เว็บแอป Streamlit สำหรับแสดง/บันทึกประวัตินักศึกษาสหกิจศึกษา, กิจกรรม, และโครงงาน
+สามารถอัปโหลด/บันทึกรูปภาพและไฟล์ PDF ได้ ข้อมูลจะถูกเก็บไว้ในโฟลเดอร์ data/ และ uploads/
+รันด้วยคำสั่ง:  streamlit run app.py
+"""
+
+import streamlit as st
+import json
+import os
+import uuid
+from datetime import datetime, date
+from pathlib import Path
+
+# ----------------------------------------------------------------------------
+# CONFIG & PATHS
+# ----------------------------------------------------------------------------
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / "data"
+UPLOAD_DIR = BASE_DIR / "uploads"
+PROFILE_IMG_DIR = UPLOAD_DIR / "profile"
+WORKS_DIR = UPLOAD_DIR / "works"
+PROJECTS_DIR = UPLOAD_DIR / "projects"
+
+for d in [DATA_DIR, PROFILE_IMG_DIR, WORKS_DIR, PROJECTS_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
+PROFILE_FILE = DATA_DIR / "profile.json"
+WORKS_FILE = DATA_DIR / "works.json"
+PROJECTS_FILE = DATA_DIR / "projects.json"
+
+DEFAULT_PROFILE = {
+    "name_th": "ชื่อ-นามสกุล (ภาษาไทย)",
+    "name_en": "Name Surname",
+    "role": "นักศึกษาสหกิจศึกษา",
+    "department": "ภาควิชา / สาขาวิชา",
+    "university": "มหาวิทยาลัย",
+    "company": "บริษัทที่ฝึกงาน",
+    "company_unit": "ฝ่าย / แผนก",
+    "photo": None,
+}
+
+st.set_page_config(
+    page_title="Portfolio สหกิจศึกษา",
+    page_icon="🎓",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ----------------------------------------------------------------------------
+# STORAGE HELPERS
+# ----------------------------------------------------------------------------
+def load_json(path: Path, default):
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default
+    return default
+
+
+def save_json(path: Path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def save_uploaded_file(uploaded_file, target_dir: Path) -> str:
+    """Save an uploaded file with a unique name, return the relative path (str)."""
+    ext = Path(uploaded_file.name).suffix
+    fname = f"{uuid.uuid4().hex}{ext}"
+    fpath = target_dir / fname
+    with open(fpath, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return str(fpath)
+
+
+def init_state():
+    if "profile" not in st.session_state:
+        st.session_state.profile = load_json(PROFILE_FILE, DEFAULT_PROFILE.copy())
+    if "works" not in st.session_state:
+        st.session_state.works = load_json(WORKS_FILE, [])
+    if "projects" not in st.session_state:
+        st.session_state.projects = load_json(PROJECTS_FILE, [])
+    if "page" not in st.session_state:
+        st.session_state.page = "Home"
+    if "edit_profile" not in st.session_state:
+        st.session_state.edit_profile = False
+    if "show_add_work" not in st.session_state:
+        st.session_state.show_add_work = False
+    if "show_add_project" not in st.session_state:
+        st.session_state.show_add_project = False
+    if "work_filter" not in st.session_state:
+        st.session_state.work_filter = "ทั้งหมด"
+    if "work_search" not in st.session_state:
+        st.session_state.work_search = ""
+
+
+init_state()
+
+# ----------------------------------------------------------------------------
+# STYLE  (full-bleed, edge-to-edge layout to match the reference UI)
+# ----------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header[data-testid="stHeader"] {background: transparent; height: 0; min-height: 0;}
+    div[data-testid="stToolbar"] {display: none;}
+
+    html, body, .stApp, [data-testid="stAppViewContainer"] {
+        background: #eef2ef;
+        margin: 0;
+    }
+
+    /* remove Streamlit's default centered/padded container so content goes edge-to-edge */
+    section[data-testid="stMain"] > div.block-container,
+    .main .block-container {
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 100% !important;
+    }
+    div[data-testid="stAppViewBlockContainer"] { padding: 0 !important; max-width: 100% !important; }
+    div[data-testid="stVerticalBlockBorderWrapper"] { width: 100%; }
+
+    /* ---------- Top navigation bar (full width) ---------- */
+    .st-key-topnav {
+        background: linear-gradient(90deg, #0e4a30 0%, #157a4b 55%, #0b3a4d 100%);
+        padding: 16px 40px;
+        color: white;
+    }
+    .st-key-topnav .stButton > button {
+        background: transparent;
+        color: #eafff2;
+        border: none;
+        font-weight: 600;
+        font-size: 14.5px;
+        border-radius: 20px;
+        padding: 8px 18px;
+        box-shadow: none;
+        transition: background 0.15s ease;
+    }
+    .st-key-topnav .stButton > button:hover {
+        background: rgba(255,255,255,0.14);
+        color: white;
+        border: none;
+    }
+    .st-key-topnav .stButton > button:focus:not(:active) {
+        background: rgba(255,255,255,0.14);
+        color: white;
+    }
+    .st-key-edit_profile_btn .stButton > button {
+        background: rgba(255,255,255,0.14) !important;
+        border: 1px solid rgba(255,255,255,0.35) !important;
+        color: white !important;
+    }
+    .st-key-edit_profile_btn .stButton > button:hover {
+        background: rgba(255,255,255,0.24) !important;
+    }
+    .topbar-title { font-size: 19px; font-weight: 800; line-height: 1.2; }
+    .topbar-sub { font-size: 12px; opacity: 0.85; margin-top: -2px;}
+
+    /* ---------- Home hero (full-bleed page background) ---------- */
+    .st-key-home_hero {
+        background: linear-gradient(150deg, #0b4a34 0%, #146c4a 40%, #0a2e42 100%);
+        padding: 70px 60px;
+        min-height: calc(100vh - 78px);
+        color: white;
+    }
+    .badge-role {
+        display:inline-block;
+        background: rgba(255,255,255,0.12);
+        padding: 6px 16px;
+        border-radius: 20px;
+        font-size: 13px;
+        margin-bottom: 22px;
+    }
+    .hero-name-th { font-size: 38px; font-weight: 800; margin-bottom: 4px;}
+    .hero-name-en { font-size: 19px; color: #8fe3c0; margin-bottom: 26px;}
+    .info-row { font-size: 16px; font-weight: 700; margin-top: 18px;}
+    .info-sub { font-size: 13px; color: #cfe9de; font-weight: 400;}
+
+    .st-key-home_hero .stButton > button {
+        border-radius: 8px;
+        font-weight: 600;
+        height: 46px;
+    }
+    .st-key-hero_btn_primary .stButton > button {
+        background: white; color: #0b4a34; border: none;
+    }
+    .st-key-hero_btn_secondary .stButton > button {
+        background: transparent; color: white; border: 1px solid rgba(255,255,255,0.5);
+    }
+
+    .profile-photo-frame {
+        background: white;
+        border-radius: 14px;
+        padding: 8px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    }
+    .profile-photo-frame img { border-radius: 8px; display: block; width: 100%; }
+    .photo-caption { text-align: center; font-size: 12.5px; color: #cfe9de; margin-top: 10px; }
+    .photo-placeholder {
+        background: rgba(255,255,255,0.08);
+        border: 1px dashed rgba(255,255,255,0.4);
+        border-radius: 14px;
+        padding: 90px 10px;
+        text-align: center;
+        color: #dfeee6;
+    }
+
+    /* ---------- Page content wrapper for Portfolio / Project ---------- */
+    .st-key-page_content {
+        padding: 34px 44px 60px 44px;
+    }
+
+    .stat-card {
+        background: white;
+        border-radius: 14px;
+        padding: 18px 20px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+        text-align: left;
+    }
+    .stat-num { font-size: 26px; font-weight: 800; color: #111; }
+    .stat-label { font-size: 13px; color: #666; }
+
+    .work-card, .project-card {
+        background: white;
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+        margin-bottom: 14px;
+    }
+    .work-title { font-weight: 700; font-size: 16px; margin-bottom: 2px;}
+    .work-meta { font-size: 12px; color: #888; margin-bottom: 8px;}
+    .empty-box {
+        text-align: center;
+        padding: 70px 0;
+        color: #999;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ----------------------------------------------------------------------------
+# TOP NAVIGATION BAR
+# ----------------------------------------------------------------------------
+NAV_ITEMS = [
+    ("Home", "🏠 Home", "หน้าแรก", "nav_home"),
+    ("Portfolio", "🗂️ Portfolio", "พอร์ตโฟลิโอ", "nav_portfolio"),
+    ("Project", "📋 Project", "โครงงาน", "nav_project"),
+]
+
+
+def top_nav():
+    # highlight the active tab as a white pill, like the reference design
+    active_key = next(k for name, _, _, k in NAV_ITEMS if name == st.session_state.page)
+    st.markdown(
+        f"""
+        <style>
+        .st-key-{active_key} .stButton > button {{
+            background: white !important;
+            color: #0e4a30 !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container(key="topnav"):
+        c_brand, c1, c2, c3, c_spacer, c_edit = st.columns(
+            [2.4, 0.9, 1.1, 0.9, 1.6, 1.3]
+        )
+        with c_brand:
+            st.markdown(
+                """
+                <div class="topbar-title">🎓 Portfolio สหกิจศึกษา</div>
+                <div class="topbar-sub">Cooperative Education Portfolio</div>
+                """,
+                unsafe_allow_html=True,
+            )
+        for col, (name, label, sub, key) in zip([c1, c2, c3], NAV_ITEMS):
+            with col:
+                with st.container(key=key):
+                    if st.button(f"{label}\n{sub}", use_container_width=True):
+                        st.session_state.page = name
+                        st.rerun()
+        with c_spacer:
+            st.write("")
+        with c_edit:
+            with st.container(key="edit_profile_btn"):
+                if st.button("✏️ แก้ไขโปรไฟล์", use_container_width=True):
+                    st.session_state.edit_profile = True
+                    st.session_state.page = "Home"
+                    st.rerun()
+
+
+# ----------------------------------------------------------------------------
+# HOME PAGE
+# ----------------------------------------------------------------------------
+def profile_edit_form():
+    p = st.session_state.profile
+    st.subheader("✏️ แก้ไขโปรไฟล์")
+    with st.form("profile_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            name_th = st.text_input("ชื่อ-นามสกุล (ภาษาไทย)", value=p.get("name_th", ""))
+            department = st.text_input("ภาควิชา / สาขาวิชา", value=p.get("department", ""))
+            company = st.text_input("บริษัทที่ฝึกงาน", value=p.get("company", ""))
+        with col2:
+            name_en = st.text_input("Name Surname (English)", value=p.get("name_en", ""))
+            university = st.text_input("มหาวิทยาลัย", value=p.get("university", ""))
+            company_unit = st.text_input("ฝ่าย / แผนก", value=p.get("company_unit", ""))
+
+        role = st.text_input("สถานะ (บทบาท)", value=p.get("role", "นักศึกษาสหกิจศึกษา"))
+        photo_file = st.file_uploader("รูปโปรไฟล์ (คลิกเพื่อเปลี่ยน)", type=["png", "jpg", "jpeg"])
+
+        submitted = st.form_submit_button("💾 บันทึกโปรไฟล์", use_container_width=True)
+        cancel = st.form_submit_button("ยกเลิก", use_container_width=True)
+
+        if submitted:
+            p["name_th"] = name_th
+            p["name_en"] = name_en
+            p["role"] = role
+            p["department"] = department
+            p["university"] = university
+            p["company"] = company
+            p["company_unit"] = company_unit
+            if photo_file is not None:
+                p["photo"] = save_uploaded_file(photo_file, PROFILE_IMG_DIR)
+            st.session_state.profile = p
+            save_json(PROFILE_FILE, p)
+            st.session_state.edit_profile = False
+            st.success("บันทึกโปรไฟล์เรียบร้อยแล้ว")
+            st.rerun()
+
+        if cancel:
+            st.session_state.edit_profile = False
+            st.rerun()
+
+
+def home_page():
+    p = st.session_state.profile
+
+    if st.session_state.edit_profile:
+        with st.container(key="page_content"):
+            profile_edit_form()
+        return
+
+    with st.container(key="home_hero"):
+        left, right = st.columns([2.1, 1])
+        with left:
+            st.markdown(
+                f"""
+                <div class="badge-role">🎓 {p.get('role','')}</div>
+                <div class="hero-name-th">{p.get('name_th','')}</div>
+                <div class="hero-name-en">{p.get('name_en','')}</div>
+                <div class="info-row">🏛️ {p.get('department','')}
+                    <div class="info-sub">Department</div>
+                </div>
+                <div class="info-row">🎓 {p.get('university','')}
+                    <div class="info-sub">University</div>
+                </div>
+                <div class="info-row">🏢 {p.get('company','')}
+                    <div class="info-sub">{p.get('company_unit','')}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.write("")
+            st.write("")
+            b1, b2 = st.columns(2)
+            with b1:
+                with st.container(key="hero_btn_primary"):
+                    if st.button("ดูพอร์ตโฟลิโอ →", use_container_width=True):
+                        st.session_state.page = "Portfolio"
+                        st.rerun()
+            with b2:
+                with st.container(key="hero_btn_secondary"):
+                    if st.button("✏️ แก้ไขโปรไฟล์ ", use_container_width=True):
+                        st.session_state.edit_profile = True
+                        st.rerun()
+
+        with right:
+            if p.get("photo") and os.path.exists(p["photo"]):
+                import base64
+                img_bytes = Path(p["photo"]).read_bytes()
+                b64 = base64.b64encode(img_bytes).decode()
+                ext = Path(p["photo"]).suffix.lstrip(".") or "png"
+                st.markdown(
+                    f"""
+                    <div class="profile-photo-frame">
+                        <img src="data:image/{ext};base64,{b64}" />
+                    </div>
+                    <div class="photo-caption">คลิกที่รูปเพื่อเปลี่ยน</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    """
+                    <div class="photo-placeholder">
+                        📷<br>ยังไม่มีรูปโปรไฟล์
+                    </div>
+                    <div class="photo-caption">คลิก 'แก้ไขโปรไฟล์' เพื่อเพิ่มรูป</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+# ----------------------------------------------------------------------------
+# PORTFOLIO (WORKS / ACTIVITIES) PAGE
+# ----------------------------------------------------------------------------
+def add_work_form():
+    st.subheader("➕ เพิ่มผลงาน / กิจกรรม")
+    with st.form("add_work_form", clear_on_submit=True):
+        title = st.text_input("ชื่อผลงาน / กิจกรรม *")
+        work_type = st.selectbox("ประเภท", ["รูปภาพ", "PDF", "บทความ"])
+        work_date = st.date_input("วันที่ทำกิจกรรม", value=date.today())
+        description = st.text_area("รายละเอียด")
+        uploaded_file = st.file_uploader(
+            "แนบไฟล์ (รูปภาพ / PDF)", type=["png", "jpg", "jpeg", "pdf"]
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            submitted = st.form_submit_button("💾 บันทึก", use_container_width=True)
+        with c2:
+            cancel = st.form_submit_button("ยกเลิก", use_container_width=True)
+
+        if submitted:
+            if not title:
+                st.error("กรุณากรอกชื่อผลงาน")
+            else:
+                file_path = None
+                if uploaded_file is not None:
+                    file_path = save_uploaded_file(uploaded_file, WORKS_DIR)
+                item = {
+                    "id": uuid.uuid4().hex,
+                    "title": title,
+                    "type": work_type,
+                    "date": str(work_date),
+                    "description": description,
+                    "file": file_path,
+                    "created_at": datetime.now().isoformat(),
+                }
+                st.session_state.works.append(item)
+                save_json(WORKS_FILE, st.session_state.works)
+                st.session_state.show_add_work = False
+                st.success("เพิ่มผลงานเรียบร้อยแล้ว")
+                st.rerun()
+
+        if cancel:
+            st.session_state.show_add_work = False
+            st.rerun()
+
+
+def portfolio_page():
+    with st.container(key="page_content"):
+        _portfolio_page_body()
+
+
+def _portfolio_page_body():
+    works = st.session_state.works
+
+    total_works = len(works)
+    weeks_with_work = len({w["date"] for w in works}) if works else 0
+    total_images = len([w for w in works if w["type"] == "รูปภาพ"])
+    total_pdfs = len([w for w in works if w["type"] == "PDF"])
+
+    s1, s2, s3, s4 = st.columns(4)
+    for col, icon, num, label in [
+        (s1, "📁", total_works, "ผลงานทั้งหมด"),
+        (s2, "📅", weeks_with_work, "วันที่มีผลงาน"),
+        (s3, "🖼️", total_images, "รูปภาพ"),
+        (s4, "📄", total_pdfs, "PDF / รายงาน"),
+    ]:
+        with col:
+            st.markdown(
+                f"""
+                <div class="stat-card">
+                    <div style="font-size:20px;">{icon}</div>
+                    <div class="stat-num">{num}</div>
+                    <div class="stat-label">{label}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.write("")
+    sc1, sc2, sc3, sc4, sc5 = st.columns([3, 1, 1, 1, 1.3])
+    with sc1:
+        st.session_state.work_search = st.text_input(
+            "ค้นหา", value=st.session_state.work_search,
+            placeholder="🔍 ค้นหาผลงาน...", label_visibility="collapsed",
+        )
+    with sc2:
+        if st.button("ทั้งหมด", use_container_width=True):
+            st.session_state.work_filter = "ทั้งหมด"
+    with sc3:
+        if st.button("รูปภาพ", use_container_width=True):
+            st.session_state.work_filter = "รูปภาพ"
+    with sc4:
+        if st.button("PDF", use_container_width=True):
+            st.session_state.work_filter = "PDF"
+    with sc5:
+        if st.button("➕ เพิ่มผลงาน", use_container_width=True, type="primary"):
+            st.session_state.show_add_work = True
+
+    if st.session_state.show_add_work:
+        add_work_form()
+        st.divider()
+
+    # filter + search
+    filtered = works
+    if st.session_state.work_filter != "ทั้งหมด":
+        filtered = [w for w in filtered if w["type"] == st.session_state.work_filter]
+    if st.session_state.work_search:
+        q = st.session_state.work_search.lower()
+        filtered = [w for w in filtered if q in w["title"].lower() or q in w.get("description", "").lower()]
+
+    if not filtered:
+        st.markdown(
+            """
+            <div class="empty-box">
+                📁<br><br>
+                <b>ยังไม่มีผลงาน</b><br>
+                กดปุ่ม "เพิ่มผลงาน" เพื่อเริ่มบันทึกสิ่งที่คุณทำในสหกิจศึกษา
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    cols = st.columns(3)
+    for i, w in enumerate(sorted(filtered, key=lambda x: x["created_at"], reverse=True)):
+        with cols[i % 3]:
+            st.markdown('<div class="work-card">', unsafe_allow_html=True)
+            if w.get("file") and os.path.exists(w["file"]):
+                if w["type"] == "รูปภาพ":
+                    st.image(w["file"], use_container_width=True)
+                elif w["type"] == "PDF":
+                    st.markdown("📄 **ไฟล์ PDF แนบอยู่**")
+                    with open(w["file"], "rb") as f:
+                        st.download_button(
+                            "ดาวน์โหลด PDF", f, file_name=os.path.basename(w["file"]),
+                            key=f"dl_{w['id']}", use_container_width=True,
+                        )
+            st.markdown(f'<div class="work-title">{w["title"]}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="work-meta">🏷️ {w["type"]} &nbsp;•&nbsp; 📅 {w["date"]}</div>',
+                unsafe_allow_html=True,
+            )
+            if w.get("description"):
+                st.write(w["description"])
+            if st.button("🗑️ ลบ", key=f"del_work_{w['id']}"):
+                st.session_state.works = [x for x in st.session_state.works if x["id"] != w["id"]]
+                save_json(WORKS_FILE, st.session_state.works)
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ----------------------------------------------------------------------------
+# PROJECT PAGE
+# ----------------------------------------------------------------------------
+def add_project_form():
+    st.subheader("➕ เพิ่มโครงงาน")
+    with st.form("add_project_form", clear_on_submit=True):
+        title = st.text_input("ชื่อโครงงาน *")
+        summary = st.text_area("รายละเอียดโครงงาน")
+        proj_date = st.date_input("วันที่ส่งโครงงาน", value=date.today())
+        uploaded_file = st.file_uploader("อัปโหลดไฟล์รายงาน (PDF)", type=["pdf"])
+        c1, c2 = st.columns(2)
+        with c1:
+            submitted = st.form_submit_button("💾 บันทึก", use_container_width=True)
+        with c2:
+            cancel = st.form_submit_button("ยกเลิก", use_container_width=True)
+
+        if submitted:
+            if not title:
+                st.error("กรุณากรอกชื่อโครงงาน")
+            else:
+                file_path = None
+                if uploaded_file is not None:
+                    file_path = save_uploaded_file(uploaded_file, PROJECTS_DIR)
+                item = {
+                    "id": uuid.uuid4().hex,
+                    "title": title,
+                    "summary": summary,
+                    "date": str(proj_date),
+                    "file": file_path,
+                    "created_at": datetime.now().isoformat(),
+                }
+                st.session_state.projects.append(item)
+                save_json(PROJECTS_FILE, st.session_state.projects)
+                st.session_state.show_add_project = False
+                st.success("เพิ่มโครงงานเรียบร้อยแล้ว")
+                st.rerun()
+
+        if cancel:
+            st.session_state.show_add_project = False
+            st.rerun()
+
+
+def project_page():
+    with st.container(key="page_content"):
+        _project_page_body()
+
+
+def _project_page_body():
+    top_l, top_r = st.columns([3, 1])
+    with top_l:
+        st.markdown("### 📋 โครงงานสหกิจศึกษา")
+        st.caption("อัปโหลดและแสดงไฟล์รายงานโครงงาน")
+    with top_r:
+        if st.button("➕ เพิ่มโครงงาน", use_container_width=True, type="primary"):
+            st.session_state.show_add_project = True
+
+    if st.session_state.show_add_project:
+        add_project_form()
+        st.divider()
+
+    projects = st.session_state.projects
+    if not projects:
+        st.markdown(
+            """
+            <div class="empty-box">
+                📋<br><br>
+                <b>ยังไม่มีโครงงาน</b><br>
+                กดปุ่ม "+ เพิ่มโครงงาน" เพื่อเริ่มต้น
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    for p in sorted(projects, key=lambda x: x["created_at"], reverse=True):
+        st.markdown('<div class="project-card">', unsafe_allow_html=True)
+        st.markdown(f'<div class="work-title">📄 {p["title"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="work-meta">📅 {p["date"]}</div>', unsafe_allow_html=True)
+        if p.get("summary"):
+            st.write(p["summary"])
+        if p.get("file") and os.path.exists(p["file"]):
+            with open(p["file"], "rb") as f:
+                st.download_button(
+                    "📥 ดาวน์โหลดรายงาน", f, file_name=os.path.basename(p["file"]),
+                    key=f"dl_proj_{p['id']}",
+                )
+        if st.button("🗑️ ลบโครงงาน", key=f"del_proj_{p['id']}"):
+            st.session_state.projects = [x for x in st.session_state.projects if x["id"] != p["id"]]
+            save_json(PROJECTS_FILE, st.session_state.projects)
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ----------------------------------------------------------------------------
+# MAIN
+# ----------------------------------------------------------------------------
+def main():
+    top_nav()
+
+    page = st.session_state.page
+    if page == "Home":
+        home_page()
+    elif page == "Portfolio":
+        portfolio_page()
+    elif page == "Project":
+        project_page()
+
+
+if __name__ == "__main__":
+    main()
