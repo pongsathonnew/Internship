@@ -40,6 +40,22 @@ DEFAULT_PROFILE = {
     "photo": None,
 }
 
+# หมวดหมู่เดือนของการฝึกสหกิจศึกษา: มิถุนายน 2569 - กุมภาพันธ์ 2570
+# key = ใช้สำหรับเรียงลำดับ (YYYY-MM แบบสากล), label = ข้อความที่แสดงผล (พ.ศ.)
+MONTH_CATEGORIES = [
+    {"key": "2026-06", "label": "มิถุนายน 2569"},
+    {"key": "2026-07", "label": "กรกฎาคม 2569"},
+    {"key": "2026-08", "label": "สิงหาคม 2569"},
+    {"key": "2026-09", "label": "กันยายน 2569"},
+    {"key": "2026-10", "label": "ตุลาคม 2569"},
+    {"key": "2026-11", "label": "พฤศจิกายน 2569"},
+    {"key": "2026-12", "label": "ธันวาคม 2569"},
+    {"key": "2027-01", "label": "มกราคม 2570"},
+    {"key": "2027-02", "label": "กุมภาพันธ์ 2570"},
+]
+MONTH_KEY_TO_LABEL = {m["key"]: m["label"] for m in MONTH_CATEGORIES}
+MONTH_LABEL_TO_KEY = {m["label"]: m["key"] for m in MONTH_CATEGORIES}
+
 st.set_page_config(
     page_title="Portfolio สหกิจศึกษา",
     page_icon="🎓",
@@ -92,6 +108,8 @@ def init_state():
         st.session_state.show_add_project = False
     if "work_filter" not in st.session_state:
         st.session_state.work_filter = "ทั้งหมด"
+    if "work_month_filter" not in st.session_state:
+        st.session_state.work_month_filter = "ทั้งหมด"
     if "work_search" not in st.session_state:
         st.session_state.work_search = ""
 
@@ -461,12 +479,27 @@ def add_work_form():
     st.subheader("➕ เพิ่มผลงาน / กิจกรรม")
     with st.form("add_work_form", clear_on_submit=True):
         title = st.text_input("ชื่อผลงาน / กิจกรรม *")
-        work_type = st.selectbox("ประเภท", ["รูปภาพ", "PDF", "บทความ"])
-        work_date = st.date_input("วันที่ทำกิจกรรม", value=date.today())
+        col_a, col_b = st.columns(2)
+        with col_a:
+            work_type = st.selectbox("ประเภท", ["รูปภาพ", "PDF", "บทความ"])
+        with col_b:
+            month_label = st.selectbox(
+                "หมวดหมู่เดือน (สหกิจศึกษา)",
+                [m["label"] for m in MONTH_CATEGORIES],
+            )
         description = st.text_area("รายละเอียด")
-        uploaded_file = st.file_uploader(
-            "แนบไฟล์ (รูปภาพ / PDF)", type=["png", "jpg", "jpeg", "pdf"]
-        )
+
+        uploaded_images = []
+        uploaded_pdf = None
+        if work_type == "รูปภาพ":
+            uploaded_images = st.file_uploader(
+                "แนบรูปภาพ (เลือกได้หลายรูปพร้อมกัน)",
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+            )
+        elif work_type == "PDF":
+            uploaded_pdf = st.file_uploader("แนบไฟล์ PDF", type=["pdf"])
+
         c1, c2 = st.columns(2)
         with c1:
             submitted = st.form_submit_button("💾 บันทึก", use_container_width=True)
@@ -477,27 +510,46 @@ def add_work_form():
             if not title:
                 st.error("กรุณากรอกชื่อผลงาน")
             else:
-                file_path = None
-                if uploaded_file is not None:
-                    file_path = save_uploaded_file(uploaded_file, WORKS_DIR)
+                file_paths = []
+                if work_type == "รูปภาพ" and uploaded_images:
+                    for img in uploaded_images:
+                        file_paths.append(save_uploaded_file(img, WORKS_DIR))
+                elif work_type == "PDF" and uploaded_pdf is not None:
+                    file_paths.append(save_uploaded_file(uploaded_pdf, WORKS_DIR))
+
                 item = {
                     "id": uuid.uuid4().hex,
                     "title": title,
                     "type": work_type,
-                    "date": str(work_date),
+                    "month_key": MONTH_LABEL_TO_KEY.get(month_label, ""),
+                    "month_label": month_label,
                     "description": description,
-                    "file": file_path,
+                    "files": file_paths,
                     "created_at": datetime.now().isoformat(),
                 }
                 st.session_state.works.append(item)
                 save_json(WORKS_FILE, st.session_state.works)
                 st.session_state.show_add_work = False
-                st.success("เพิ่มผลงานเรียบร้อยแล้ว")
+                n = len(file_paths)
+                st.success(f"เพิ่มผลงานเรียบร้อยแล้ว (แนบไฟล์ {n} ไฟล์)" if n else "เพิ่มผลงานเรียบร้อยแล้ว")
                 st.rerun()
 
         if cancel:
             st.session_state.show_add_work = False
             st.rerun()
+
+
+def _work_files(w):
+    """คืนค่ารายการไฟล์ของผลงาน รองรับข้อมูลรูปแบบเก่าที่เก็บเป็น 'file' เดี่ยว"""
+    if w.get("files"):
+        return w["files"]
+    if w.get("file"):
+        return [w["file"]]
+    return []
+
+
+def _work_month_label(w):
+    return w.get("month_label") or MONTH_KEY_TO_LABEL.get(w.get("month_key", ""), "ไม่ระบุเดือน")
 
 
 def portfolio_page():
@@ -509,14 +561,14 @@ def _portfolio_page_body():
     works = st.session_state.works
 
     total_works = len(works)
-    weeks_with_work = len({w["date"] for w in works}) if works else 0
-    total_images = len([w for w in works if w["type"] == "รูปภาพ"])
+    months_with_work = len({_work_month_label(w) for w in works}) if works else 0
+    total_images = sum(len(_work_files(w)) for w in works if w["type"] == "รูปภาพ")
     total_pdfs = len([w for w in works if w["type"] == "PDF"])
 
     s1, s2, s3, s4 = st.columns(4)
     for col, icon, num, label in [
         (s1, "📁", total_works, "ผลงานทั้งหมด"),
-        (s2, "📅", weeks_with_work, "วันที่มีผลงาน"),
+        (s2, "📅", months_with_work, "เดือนที่มีผลงาน"),
         (s3, "🖼️", total_images, "รูปภาพ"),
         (s4, "📄", total_pdfs, "PDF / รายงาน"),
     ]:
@@ -533,22 +585,30 @@ def _portfolio_page_body():
             )
 
     st.write("")
-    sc1, sc2, sc3, sc4, sc5 = st.columns([3, 1, 1, 1, 1.3])
+    sc1, sc2, sc3, sc4, sc5, sc6 = st.columns([2.4, 1.6, 1, 1, 1, 1.3])
     with sc1:
         st.session_state.work_search = st.text_input(
             "ค้นหา", value=st.session_state.work_search,
             placeholder="🔍 ค้นหาผลงาน...", label_visibility="collapsed",
         )
     with sc2:
+        month_options = ["ทั้งหมด"] + [m["label"] for m in MONTH_CATEGORIES]
+        st.session_state.work_month_filter = st.selectbox(
+            "เดือน", month_options,
+            index=month_options.index(st.session_state.work_month_filter)
+            if st.session_state.work_month_filter in month_options else 0,
+            label_visibility="collapsed",
+        )
+    with sc3:
         if st.button("ทั้งหมด", use_container_width=True):
             st.session_state.work_filter = "ทั้งหมด"
-    with sc3:
+    with sc4:
         if st.button("รูปภาพ", use_container_width=True):
             st.session_state.work_filter = "รูปภาพ"
-    with sc4:
+    with sc5:
         if st.button("PDF", use_container_width=True):
             st.session_state.work_filter = "PDF"
-    with sc5:
+    with sc6:
         if st.button("➕ เพิ่มผลงาน", use_container_width=True, type="primary"):
             st.session_state.show_add_work = True
 
@@ -560,6 +620,8 @@ def _portfolio_page_body():
     filtered = works
     if st.session_state.work_filter != "ทั้งหมด":
         filtered = [w for w in filtered if w["type"] == st.session_state.work_filter]
+    if st.session_state.work_month_filter != "ทั้งหมด":
+        filtered = [w for w in filtered if _work_month_label(w) == st.session_state.work_month_filter]
     if st.session_state.work_search:
         q = st.session_state.work_search.lower()
         filtered = [w for w in filtered if q in w["title"].lower() or q in w.get("description", "").lower()]
@@ -577,32 +639,54 @@ def _portfolio_page_body():
         )
         return
 
-    cols = st.columns(3)
-    for i, w in enumerate(sorted(filtered, key=lambda x: x["created_at"], reverse=True)):
-        with cols[i % 3]:
-            st.markdown('<div class="work-card">', unsafe_allow_html=True)
-            if w.get("file") and os.path.exists(w["file"]):
-                if w["type"] == "รูปภาพ":
-                    st.image(w["file"], use_container_width=True)
-                elif w["type"] == "PDF":
+    # จัดกลุ่มผลงานตามหมวดหมู่เดือน เรียงจาก มิ.ย. 69 -> ก.พ. 70
+    ordered_month_labels = [m["label"] for m in MONTH_CATEGORIES]
+    groups = {label: [] for label in ordered_month_labels}
+    groups["ไม่ระบุเดือน"] = []
+    for w in filtered:
+        label = _work_month_label(w)
+        groups.setdefault(label, [])
+        groups[label].append(w)
+
+    for month_label in ordered_month_labels + ["ไม่ระบุเดือน"]:
+        items = groups.get(month_label, [])
+        if not items:
+            continue
+        st.markdown(f"#### 🗓️ {month_label}  <span style='color:#999;font-size:13px;font-weight:400;'>({len(items)} ผลงาน)</span>", unsafe_allow_html=True)
+        cols = st.columns(3)
+        for i, w in enumerate(sorted(items, key=lambda x: x["created_at"], reverse=True)):
+            with cols[i % 3]:
+                st.markdown('<div class="work-card">', unsafe_allow_html=True)
+                files = [f for f in _work_files(w) if os.path.exists(f)]
+                if w["type"] == "รูปภาพ" and files:
+                    if len(files) == 1:
+                        st.image(files[0], use_container_width=True)
+                    else:
+                        img_cols = st.columns(min(len(files), 3))
+                        for j, fpath in enumerate(files):
+                            with img_cols[j % len(img_cols)]:
+                                st.image(fpath, use_container_width=True)
+                        st.caption(f"📷 ทั้งหมด {len(files)} รูป")
+                elif w["type"] == "PDF" and files:
                     st.markdown("📄 **ไฟล์ PDF แนบอยู่**")
-                    with open(w["file"], "rb") as f:
+                    with open(files[0], "rb") as f:
                         st.download_button(
-                            "ดาวน์โหลด PDF", f, file_name=os.path.basename(w["file"]),
+                            "ดาวน์โหลด PDF", f, file_name=os.path.basename(files[0]),
                             key=f"dl_{w['id']}", use_container_width=True,
                         )
-            st.markdown(f'<div class="work-title">{w["title"]}</div>', unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="work-meta">🏷️ {w["type"]} &nbsp;•&nbsp; 📅 {w["date"]}</div>',
-                unsafe_allow_html=True,
-            )
-            if w.get("description"):
-                st.write(w["description"])
-            if st.button("🗑️ ลบ", key=f"del_work_{w['id']}"):
-                st.session_state.works = [x for x in st.session_state.works if x["id"] != w["id"]]
-                save_json(WORKS_FILE, st.session_state.works)
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+                st.markdown(f'<div class="work-title">{w["title"]}</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="work-meta">🏷️ {w["type"]} &nbsp;•&nbsp; 🗓️ {month_label}</div>',
+                    unsafe_allow_html=True,
+                )
+                if w.get("description"):
+                    st.write(w["description"])
+                if st.button("🗑️ ลบ", key=f"del_work_{w['id']}"):
+                    st.session_state.works = [x for x in st.session_state.works if x["id"] != w["id"]]
+                    save_json(WORKS_FILE, st.session_state.works)
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+        st.write("")
 
 
 # ----------------------------------------------------------------------------
