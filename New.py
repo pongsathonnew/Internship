@@ -9,6 +9,7 @@ import streamlit as st
 import json
 import os
 import uuid
+import base64
 from datetime import datetime, date
 from pathlib import Path
 
@@ -263,6 +264,41 @@ st.markdown(
     }
     .work-title { font-weight: 700; font-size: 16px; margin-bottom: 2px;}
     .work-meta { font-size: 12px; color: #888; margin-bottom: 8px;}
+
+    .featured-img {
+        width: 100%;
+        height: 200px;
+        object-fit: cover;
+        border-radius: 10px;
+        display: block;
+        margin-bottom: 8px;
+    }
+    .thumb-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 8px;
+    }
+    .thumb-img {
+        width: 56px;
+        height: 56px;
+        object-fit: cover;
+        border-radius: 6px;
+        flex-shrink: 0;
+    }
+    .thumb-more {
+        width: 56px;
+        height: 56px;
+        border-radius: 6px;
+        background: rgba(0,0,0,0.55);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 700;
+        flex-shrink: 0;
+    }
     .empty-box {
         text-align: center;
         padding: 70px 0;
@@ -458,7 +494,6 @@ def home_page():
 
         with right:
             if p.get("photo") and os.path.exists(p["photo"]):
-                import base64
                 img_bytes = Path(p["photo"]).read_bytes()
                 b64 = base64.b64encode(img_bytes).decode()
                 ext = Path(p["photo"]).suffix.lstrip(".") or "png"
@@ -551,6 +586,35 @@ def add_work_form():
         if cancel:
             st.session_state.show_add_work = False
             st.rerun()
+
+
+def _image_to_data_uri(path):
+    ext = Path(path).suffix.lstrip(".").lower() or "png"
+    if ext == "jpg":
+        ext = "jpeg"
+    b64 = base64.b64encode(Path(path).read_bytes()).decode()
+    return f"data:image/{ext};base64,{b64}"
+
+
+def render_work_gallery(files, max_thumbs=7):
+    """แสดงรูปแรกเป็นรูปเด่นขนาดใหญ่ ส่วนรูปที่เหลือย่อเป็นภาพขนาดเท่ากันเรียงต่อกัน"""
+    if not files:
+        return
+    featured, rest = files[0], files[1:]
+    st.markdown(
+        f'<img class="featured-img" src="{_image_to_data_uri(featured)}" />',
+        unsafe_allow_html=True,
+    )
+    if rest:
+        shown = rest[:max_thumbs]
+        remaining_count = len(rest) - len(shown)
+        thumbs_html = "".join(
+            f'<img class="thumb-img" src="{_image_to_data_uri(f)}" />' for f in shown
+        )
+        if remaining_count > 0:
+            thumbs_html += f'<div class="thumb-more">+{remaining_count}</div>'
+        st.markdown(f'<div class="thumb-row">{thumbs_html}</div>', unsafe_allow_html=True)
+        st.caption(f"📷 ทั้งหมด {len(files)} รูป")
 
 
 def _work_files(w):
@@ -673,14 +737,7 @@ def _portfolio_page_body():
                 st.markdown('<div class="work-card">', unsafe_allow_html=True)
                 files = [f for f in _work_files(w) if os.path.exists(f)]
                 if w["type"] == "รูปภาพ" and files:
-                    if len(files) == 1:
-                        st.image(files[0], use_container_width=True)
-                    else:
-                        img_cols = st.columns(min(len(files), 3))
-                        for j, fpath in enumerate(files):
-                            with img_cols[j % len(img_cols)]:
-                                st.image(fpath, use_container_width=True)
-                        st.caption(f"📷 ทั้งหมด {len(files)} รูป")
+                    render_work_gallery(files)
                 elif w["type"] == "PDF" and files:
                     st.markdown("📄 **ไฟล์ PDF แนบอยู่**")
                     with open(files[0], "rb") as f:
