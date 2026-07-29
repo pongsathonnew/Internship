@@ -56,6 +56,17 @@ MONTH_CATEGORIES = [
 MONTH_KEY_TO_LABEL = {m["key"]: m["label"] for m in MONTH_CATEGORIES}
 MONTH_LABEL_TO_KEY = {m["label"]: m["key"] for m in MONTH_CATEGORIES}
 
+
+def format_thai_date(date_str):
+    """แปลงวันที่รูปแบบ YYYY-MM-DD เป็น dd/mm/ปี พ.ศ. เช่น 15/06/2569"""
+    if not date_str:
+        return ""
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        return f"{d.day:02d}/{d.month:02d}/{d.year + 543}"
+    except Exception:
+        return date_str
+
 st.set_page_config(
     page_title="Portfolio สหกิจศึกษา",
     page_icon="🎓",
@@ -479,7 +490,7 @@ def add_work_form():
     st.subheader("➕ เพิ่มผลงาน / กิจกรรม")
     with st.form("add_work_form", clear_on_submit=True):
         title = st.text_input("ชื่อผลงาน / กิจกรรม *")
-        col_a, col_b = st.columns(2)
+        col_a, col_b, col_c = st.columns(3)
         with col_a:
             work_type = st.selectbox("ประเภท", ["รูปภาพ", "PDF", "บทความ"])
         with col_b:
@@ -487,6 +498,8 @@ def add_work_form():
                 "หมวดหมู่เดือน (สหกิจศึกษา)",
                 [m["label"] for m in MONTH_CATEGORIES],
             )
+        with col_c:
+            work_date = st.date_input("วันที่ทำกิจกรรม *", value=date.today())
         description = st.text_area("รายละเอียด")
 
         uploaded_images = []
@@ -521,6 +534,7 @@ def add_work_form():
                     "id": uuid.uuid4().hex,
                     "title": title,
                     "type": work_type,
+                    "date": str(work_date),
                     "month_key": MONTH_LABEL_TO_KEY.get(month_label, ""),
                     "month_label": month_label,
                     "description": description,
@@ -654,7 +668,7 @@ def _portfolio_page_body():
             continue
         st.markdown(f"#### 🗓️ {month_label}  <span style='color:#999;font-size:13px;font-weight:400;'>({len(items)} ผลงาน)</span>", unsafe_allow_html=True)
         cols = st.columns(3)
-        for i, w in enumerate(sorted(items, key=lambda x: x["created_at"], reverse=True)):
+        for i, w in enumerate(sorted(items, key=lambda x: (x.get("date", ""), x["created_at"]), reverse=True)):
             with cols[i % 3]:
                 st.markdown('<div class="work-card">', unsafe_allow_html=True)
                 files = [f for f in _work_files(w) if os.path.exists(f)]
@@ -675,8 +689,12 @@ def _portfolio_page_body():
                             key=f"dl_{w['id']}", use_container_width=True,
                         )
                 st.markdown(f'<div class="work-title">{w["title"]}</div>', unsafe_allow_html=True)
+                date_str = format_thai_date(w.get("date", ""))
+                meta_parts = [f'🏷️ {w["type"]}', f'🗓️ {month_label}']
+                if date_str:
+                    meta_parts.append(f'📅 {date_str}')
                 st.markdown(
-                    f'<div class="work-meta">🏷️ {w["type"]} &nbsp;•&nbsp; 🗓️ {month_label}</div>',
+                    f'<div class="work-meta">{" &nbsp;•&nbsp; ".join(meta_parts)}</div>',
                     unsafe_allow_html=True,
                 )
                 if w.get("description"):
@@ -766,7 +784,7 @@ def _project_page_body():
     for p in sorted(projects, key=lambda x: x["created_at"], reverse=True):
         st.markdown('<div class="project-card">', unsafe_allow_html=True)
         st.markdown(f'<div class="work-title">📄 {p["title"]}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="work-meta">📅 {p["date"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="work-meta">📅 {format_thai_date(p["date"])}</div>', unsafe_allow_html=True)
         if p.get("summary"):
             st.write(p["summary"])
         if p.get("file") and os.path.exists(p["file"]):
