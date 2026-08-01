@@ -6,7 +6,7 @@ Portfolio สหกิจศึกษา (Cooperative Education Portfolio)
 """
 
 import streamlit as st
-import json
+import sqlite3
 import os
 import uuid
 import base64
@@ -26,9 +26,10 @@ PROJECTS_DIR = UPLOAD_DIR / "projects"
 for d in [DATA_DIR, PROFILE_IMG_DIR, WORKS_DIR, PROJECTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-PROFILE_FILE = DATA_DIR / "profile.json"
-WORKS_FILE = DATA_DIR / "works.json"
-PROJECTS_FILE = DATA_DIR / "projects.json"
+# ฐานข้อมูลจริงฝั่งเซิร์ฟเวอร์ (SQLite) — ข้อมูลทุกคนที่เข้าเว็บนี้ (ไม่ว่าจากเครื่อง/
+# เบราว์เซอร์ไหน) จะอ่าน-เขียนไฟล์ฐานข้อมูลเดียวกันบนเซิร์ฟเวอร์ ทำให้เห็นข้อมูล
+# ชุดเดียวกันเสมอ (ต่างจาก localStorage ที่ผูกกับเบราว์เซอร์ของแต่ละคน)
+DB_PATH = DATA_DIR / "portfolio.db"
 
 DEFAULT_PROFILE = {
     "name_th": "ชื่อ-นามสกุล (ภาษาไทย)",
@@ -76,21 +77,147 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------------------------------
-# STORAGE HELPERS
+# STORAGE HELPERS (ฐานข้อมูล SQLite ฝั่งเซิร์ฟเวอร์)
 # ----------------------------------------------------------------------------
-def load_json(path: Path, default):
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return default
-    return default
+def get_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def save_json(path: Path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS profile (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            name_th TEXT, name_en TEXT, role TEXT,
+            department TEXT, university TEXT,
+            company TEXT, company_unit TEXT, photo TEXT
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS works (
+            id TEXT PRIMARY KEY,
+            title TEXT, type TEXT,
+            month_key TEXT, month_label TEXT,
+            date TEXT, description TEXT, created_at TEXT
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS work_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            work_id TEXT, file_path TEXT
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            title TEXT, summary TEXT, date TEXT,
+            file TEXT, created_at TEXT
+        )"""
+    )
+    cur.execute("SELECT COUNT(*) FROM profile WHERE id = 1")
+    if cur.fetchone()[0] == 0:
+        cur.execute(
+            """INSERT INTO profile
+               (id, name_th, name_en, role, department, university, company, company_unit, photo)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                DEFAULT_PROFILE["name_th"], DEFAULT_PROFILE["name_en"], DEFAULT_PROFILE["role"],
+                DEFAULT_PROFILE["department"], DEFAULT_PROFILE["university"],
+                DEFAULT_PROFILE["company"], DEFAULT_PROFILE["company_unit"], DEFAULT_PROFILE["photo"],
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_profile():
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
+    conn.close()
+    return dict(row) if row else DEFAULT_PROFILE.copy()
+
+
+def save_profile(p):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE profile SET name_th=?, name_en=?, role=?, department=?,
+           university=?, company=?, company_unit=?, photo=? WHERE id = 1""",
+        (
+            p["name_th"], p["name_en"], p["role"], p["department"],
+            p["university"], p["company"], p["company_unit"], p["photo"],
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_works():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM works").fetchall()
+    works = []
+    for row in rows:
+        w = dict(row)
+        files = conn.execute(
+            "SELECT file_path FROM work_files WHERE work_id = ? ORDER BY id", (w["id"],)
+        ).fetchall()
+        w["files"] = [f["file_path"] for f in files]
+        works.append(w)
+    conn.close()
+    return works
+
+
+def add_work(item):
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO works (id, title, type, month_key, month_label, date, description, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            item["id"], item["title"], item["type"], item["month_key"], item["month_label"],
+            item["date"], item["description"], item["created_at"],
+        ),
+    )
+    for fp in item.get("files", []):
+        conn.execute("INSERT INTO work_files (work_id, file_path) VALUES (?, ?)", (item["id"], fp))
+    conn.commit()
+    conn.close()
+
+
+def delete_work(work_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM works WHERE id = ?", (work_id,))
+    conn.execute("DELETE FROM work_files WHERE work_id = ?", (work_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_projects():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM projects").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_project(item):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO projects (id, title, summary, date, file, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (item["id"], item["title"], item["summary"], item["date"], item.get("file"), item["created_at"]),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_project(project_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+
+
+init_db()
 
 
 def save_uploaded_file(uploaded_file, target_dir: Path) -> str:
@@ -104,12 +231,9 @@ def save_uploaded_file(uploaded_file, target_dir: Path) -> str:
 
 
 def init_state():
-    if "profile" not in st.session_state:
-        st.session_state.profile = load_json(PROFILE_FILE, DEFAULT_PROFILE.copy())
-    if "works" not in st.session_state:
-        st.session_state.works = load_json(WORKS_FILE, [])
-    if "projects" not in st.session_state:
-        st.session_state.projects = load_json(PROJECTS_FILE, [])
+    # หมายเหตุ: profile / works / projects "ไม่" ถูก cache ไว้ใน session_state
+    # อีกต่อไป แต่จะถูกดึงสดจากฐานข้อมูลทุกครั้งที่แสดงผล (get_profile / get_works /
+    # get_projects) เพื่อให้ทุกคนที่เข้าเว็บเห็นข้อมูลชุดล่าสุดที่แชร์ร่วมกันเสมอ
     if "page" not in st.session_state:
         st.session_state.page = "Home"
     if "edit_profile" not in st.session_state:
@@ -407,7 +531,7 @@ def top_nav():
 # HOME PAGE
 # ----------------------------------------------------------------------------
 def profile_edit_form():
-    p = st.session_state.profile
+    p = get_profile()
     st.subheader("✏️ แก้ไขโปรไฟล์")
     with st.form("profile_form"):
         col1, col2 = st.columns(2)
@@ -436,8 +560,7 @@ def profile_edit_form():
             p["company_unit"] = company_unit
             if photo_file is not None:
                 p["photo"] = save_uploaded_file(photo_file, PROFILE_IMG_DIR)
-            st.session_state.profile = p
-            save_json(PROFILE_FILE, p)
+            save_profile(p)
             st.session_state.edit_profile = False
             st.success("บันทึกโปรไฟล์เรียบร้อยแล้ว")
             st.rerun()
@@ -448,7 +571,7 @@ def profile_edit_form():
 
 
 def home_page():
-    p = st.session_state.profile
+    p = get_profile()
 
     if st.session_state.edit_profile:
         with st.container(key="page_content"):
@@ -573,9 +696,8 @@ def add_work_form():
                     "files": file_paths,
                     "created_at": datetime.now().isoformat(),
                 }
-                st.session_state.works.append(item)
-                save_json(WORKS_FILE, st.session_state.works)
                 st.session_state.show_add_work = False
+                add_work(item)
                 n = len(file_paths)
                 st.success(f"เพิ่มผลงานเรียบร้อยแล้ว (แนบไฟล์ {n} ไฟล์)" if n else "เพิ่มผลงานเรียบร้อยแล้ว")
                 st.rerun()
@@ -634,7 +756,7 @@ def portfolio_page():
 
 
 def _portfolio_page_body():
-    works = st.session_state.works
+    works = get_works()
 
     total_works = len(works)
     months_with_work = len({_work_month_label(w) for w in works}) if works else 0
@@ -755,8 +877,7 @@ def _portfolio_page_body():
                 if w.get("description"):
                     st.write(w["description"])
                 if st.button("🗑️ ลบ", key=f"del_work_{w['id']}"):
-                    st.session_state.works = [x for x in st.session_state.works if x["id"] != w["id"]]
-                    save_json(WORKS_FILE, st.session_state.works)
+                    delete_work(w["id"])
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
         st.write("")
@@ -793,9 +914,8 @@ def add_project_form():
                     "file": file_path,
                     "created_at": datetime.now().isoformat(),
                 }
-                st.session_state.projects.append(item)
-                save_json(PROJECTS_FILE, st.session_state.projects)
                 st.session_state.show_add_project = False
+                add_project(item)
                 st.success("เพิ่มโครงงานเรียบร้อยแล้ว")
                 st.rerun()
 
@@ -822,7 +942,7 @@ def _project_page_body():
         add_project_form()
         st.divider()
 
-    projects = st.session_state.projects
+    projects = get_projects()
     if not projects:
         st.markdown(
             """
@@ -849,8 +969,7 @@ def _project_page_body():
                     key=f"dl_proj_{p['id']}",
                 )
         if st.button("🗑️ ลบโครงงาน", key=f"del_proj_{p['id']}"):
-            st.session_state.projects = [x for x in st.session_state.projects if x["id"] != p["id"]]
-            save_json(PROJECTS_FILE, st.session_state.projects)
+            delete_project(p["id"])
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
