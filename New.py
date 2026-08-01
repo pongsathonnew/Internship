@@ -6,10 +6,12 @@ Portfolio สหกิจศึกษา (Cooperative Education Portfolio)
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import sqlite3
 import os
 import uuid
 import base64
+import json
 from datetime import datetime, date
 from pathlib import Path
 
@@ -389,37 +391,9 @@ st.markdown(
     .work-title { font-weight: 700; font-size: 16px; margin-bottom: 2px;}
     .work-meta { font-size: 12px; color: #888; margin-bottom: 8px;}
 
-    /* รูปเด่น (รูปแรก) ของผลงาน - ใหญ่ ครอปให้เต็มกรอบ แต่ยังกดขยายดูรูปเต็มได้ */
-    div[class*="st-key-work_feat_"] {
-        position: relative;
-        margin-bottom: 10px;
-    }
-    div[class*="st-key-work_feat_"] img {
-        height: 340px !important;
-        width: 100% !important;
-        object-fit: cover !important;
-        border-radius: 12px !important;
-    }
-    .gallery-badge {
-        position: absolute;
-        bottom: 14px;
-        right: 14px;
-        background: rgba(0,0,0,0.62);
-        color: white;
-        padding: 5px 14px;
-        border-radius: 20px;
-        font-size: 13px;
-        font-weight: 700;
-        pointer-events: none;
-    }
+    /* กล่องที่ครอบ iframe ของแกลเลอรีรูปภาพ (render_work_gallery) ให้ชิดขอบการ์ด */
+    div[data-testid="stIFrame"] { margin-bottom: 6px; }
 
-    /* รูปย่อยที่เหลือ - ขนาดเท่ากันทุกรูป กดขยายดูรูปเต็มได้เช่นกัน */
-    div[class*="st-key-work_thumb_"] img {
-        height: 140px !important;
-        width: 100% !important;
-        object-fit: cover !important;
-        border-radius: 8px !important;
-    }
     .empty-box {
         text-align: center;
         padding: 70px 0;
@@ -707,34 +681,143 @@ def add_work_form():
             st.rerun()
 
 
-def render_work_gallery(files, work_id, max_visible_thumbs=8):
-    """แสดงรูปแรกเป็นรูปเด่นขนาดใหญ่ (มีป้าย +N รูป ทับมุมถ้ามีรูปเพิ่ม)
-    ส่วนรูปที่เหลือย่อเป็นภาพขนาดเท่ากันเรียงต่อกันด้านล่าง
-    ใช้ st.image ทุกรูปเพื่อให้กดขยายดูรูปเต็มขนาดได้ (ไอคอนขยายจะขึ้นเมื่อชี้เมาส์/แตะที่รูป)
+def _image_to_data_uri(path):
+    ext = Path(path).suffix.lstrip(".").lower() or "png"
+    if ext == "jpg":
+        ext = "jpeg"
+    b64 = base64.b64encode(Path(path).read_bytes()).decode()
+    return f"data:image/{ext};base64,{b64}"
+
+
+def render_work_gallery(files, work_id):
+    """แสดงรูปเด่น (รูปแรก) สูง 180px พร้อมป้าย '+N รูป' ทับมุม
+    กดแล้วเปิด Lightbox เต็มจอ เลื่อนดูรูปทั้งหมดได้ด้วยปุ่ม ‹ › (หรือปุ่มลูกศร
+    บนคีย์บอร์ด) มีแถบรูปย่อด้านล่างและตัวนับ 'x / N'
     """
     if not files:
         return
-    featured, rest = files[0], files[1:]
+    data_uris = [_image_to_data_uri(f) for f in files]
+    total = len(data_uris)
+    images_json = json.dumps(data_uris)
 
-    with st.container(key=f"work_feat_{work_id}"):
-        st.image(featured, use_container_width=True)
-        if rest:
-            st.markdown(
-                f'<div class="gallery-badge">+{len(rest)} รูป</div>',
-                unsafe_allow_html=True,
-            )
+    badge_html = f'<div class="badge">+{total - 1} รูป</div>' if total > 1 else ""
+    strip_html = "".join(
+        f'<img src="{uri}" class="strip-thumb" onclick="showIdx({i})" />'
+        for i, uri in enumerate(data_uris)
+    )
+    prev_btn = '<button class="arrow" onclick="nav(-1)">‹</button>' if total > 1 else ""
+    next_btn = '<button class="arrow" onclick="nav(1)">›</button>' if total > 1 else ""
+    strip_block = f'<div class="strip" onclick="event.stopPropagation()">{strip_html}</div>' if total > 1 else ""
+    counter_block = '<div class="counter" id="counter"></div>' if total > 1 else ""
 
-    if rest:
-        shown = rest[:max_visible_thumbs]
-        remaining_hidden = len(rest) - len(shown)
-        n_cols = min(len(shown), 4)
-        thumb_cols = st.columns(n_cols)
-        for idx, fpath in enumerate(shown):
-            with thumb_cols[idx % n_cols]:
-                with st.container(key=f"work_thumb_{work_id}_{idx}"):
-                    st.image(fpath, use_container_width=True)
-        if remaining_hidden > 0:
-            st.caption(f"และอีก {remaining_hidden} รูป (ทั้งหมด {len(files)} รูป)")
+    html = f"""
+    <html><head><style>
+      * {{ box-sizing: border-box; }}
+      body {{ margin:0; font-family:'Sarabun','Noto Sans Thai',sans-serif; background:transparent; }}
+      .featured-wrap {{ position:relative; cursor:pointer; border-radius:12px; overflow:hidden; }}
+      .featured-img {{ width:100%; height:180px; object-fit:cover; display:block; transition:filter .15s; }}
+      .featured-wrap:hover .featured-img {{ filter:brightness(0.85); }}
+      .badge {{ position:absolute; bottom:8px; right:8px; background:rgba(0,0,0,0.6); color:#fff;
+                 border-radius:6px; font-size:12px; font-weight:600; padding:3px 9px; }}
+      .hint {{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+                opacity:0; transition:opacity .15s; }}
+      .featured-wrap:hover .hint {{ opacity:1; }}
+      .hint span {{ color:#fff; font-size:13px; font-weight:600; background:rgba(0,0,0,0.45);
+                     border-radius:6px; padding:4px 10px; }}
+
+      .overlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,0.88); z-index:999999;
+                   align-items:center; justify-content:center; flex-direction:column; gap:16px; }}
+      .overlay.open {{ display:flex; }}
+      .close-btn {{ position:absolute; top:16px; right:20px; background:none; border:none; color:#fff;
+                     font-size:28px; cursor:pointer; line-height:1; }}
+      .stage {{ display:flex; align-items:center; gap:12px; max-width:90vw; }}
+      .arrow {{ background:rgba(255,255,255,0.15); border:none; color:#fff; font-size:22px; width:44px;
+                 height:44px; border-radius:50%; cursor:pointer; flex-shrink:0; }}
+      .main-img {{ max-width:80vw; max-height:78vh; border-radius:10px; object-fit:contain;
+                    box-shadow:0 8px 40px rgba(0,0,0,0.5); }}
+      .strip {{ display:flex; gap:8px; flex-wrap:wrap; justify-content:center; max-width:80vw; }}
+      .strip-thumb {{ width:56px; height:56px; object-fit:cover; border-radius:6px; cursor:pointer;
+                       opacity:0.5; border:2px solid transparent; transition:all .15s; }}
+      .strip-thumb.active {{ opacity:1; border-color:#1D9E75; }}
+      .counter {{ color:rgba(255,255,255,0.6); font-size:13px; }}
+    </style></head>
+    <body>
+      <div class="featured-wrap" onclick="openLB()">
+        <img class="featured-img" src="{data_uris[0]}" />
+        {badge_html}
+        <div class="hint"><span>🔍 ดูรูป</span></div>
+      </div>
+
+      <div class="overlay" id="overlay" onclick="if(event.target===this) closeLB()">
+        <button class="close-btn" onclick="closeLB()">×</button>
+        <div class="stage" onclick="event.stopPropagation()">
+          {prev_btn}
+          <img class="main-img" id="mainImg" src="" />
+          {next_btn}
+        </div>
+        {strip_block}
+        {counter_block}
+      </div>
+
+      <script>
+        const IMAGES_{work_id} = {images_json};
+        let idx_{work_id} = 0;
+        const overlay = document.getElementById('overlay');
+        const mainImg = document.getElementById('mainImg');
+        const counterEl = document.getElementById('counter');
+
+        function update() {{
+          mainImg.src = IMAGES_{work_id}[idx_{work_id}];
+          if (counterEl) counterEl.innerText = (idx_{work_id} + 1) + ' / ' + IMAGES_{work_id}.length;
+          document.querySelectorAll('.strip-thumb').forEach((t, i) => {{
+            t.classList.toggle('active', i === idx_{work_id});
+          }});
+        }}
+        function resizeFrame(full) {{
+          try {{
+            const fe = window.frameElement;
+            if (!fe) return;
+            if (full) {{
+              fe.dataset.prevStyle = fe.getAttribute('style') || '';
+              fe.style.position = 'fixed';
+              fe.style.top = '0';
+              fe.style.left = '0';
+              fe.style.width = '100vw';
+              fe.style.height = '100vh';
+              fe.style.zIndex = '999999';
+            }} else {{
+              fe.setAttribute('style', fe.dataset.prevStyle || '');
+            }}
+          }} catch (e) {{}}
+        }}
+        function openLB() {{
+          idx_{work_id} = 0;
+          update();
+          overlay.classList.add('open');
+          resizeFrame(true);
+        }}
+        function closeLB() {{
+          overlay.classList.remove('open');
+          resizeFrame(false);
+        }}
+        function nav(delta) {{
+          idx_{work_id} = (idx_{work_id} + delta + IMAGES_{work_id}.length) % IMAGES_{work_id}.length;
+          update();
+        }}
+        function showIdx(i) {{
+          idx_{work_id} = i;
+          update();
+        }}
+        document.addEventListener('keydown', function(e) {{
+          if (!overlay.classList.contains('open')) return;
+          if (e.key === 'ArrowLeft') nav(-1);
+          if (e.key === 'ArrowRight') nav(1);
+          if (e.key === 'Escape') closeLB();
+        }});
+      </script>
+    </body></html>
+    """
+    components.html(html, height=180, scrolling=False)
 
 
 def _work_files(w):
