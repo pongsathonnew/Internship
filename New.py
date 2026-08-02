@@ -7,8 +7,7 @@ Portfolio สหกิจศึกษา (Cooperative Education Portfolio)
 
 import streamlit as st
 import streamlit.components.v1 as components
-import sqlite3
-import os
+from sqlalchemy import text
 import uuid
 import base64
 import json
@@ -20,18 +19,41 @@ from pathlib import Path
 # ----------------------------------------------------------------------------
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
-UPLOAD_DIR = BASE_DIR / "uploads"
-PROFILE_IMG_DIR = UPLOAD_DIR / "profile"
-WORKS_DIR = UPLOAD_DIR / "works"
-PROJECTS_DIR = UPLOAD_DIR / "projects"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-for d in [DATA_DIR, PROFILE_IMG_DIR, WORKS_DIR, PROJECTS_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
+# ----------------------------------------------------------------------------
+# ฐานข้อมูล — เก็บ "ทุกอย่าง" ไว้ในฐานข้อมูลจริง (รวมถึงรูปภาพ/ไฟล์ PDF ที่แปลง
+# เป็น base64 เก็บลงตาราง) ไม่มีการเขียนไฟล์ผู้ใช้ลงดิสก์ของเซิร์ฟเวอร์เลย
+# เพื่อให้ข้อมูลไม่หายแม้ตัวเครื่อง/คอนเทนเนอร์ที่รันแอปจะถูกรีสตาร์ทหรือ
+# สร้างใหม่ (เช่นตอน deploy ใหม่บน Streamlit Community Cloud ซึ่งดิสก์ในเครื่อง
+# จะถูกล้างทุกครั้งที่แอป restart/redeploy)
+#
+# ค่าเริ่มต้น (ไม่ตั้งค่าอะไรเพิ่ม) จะใช้ไฟล์ SQLite ในเครื่อง data/portfolio.db
+# ซึ่งสะดวกสำหรับพัฒนา/ทดสอบในเครื่องตัวเอง แต่ "จะไม่รอด" การ redeploy บน
+# Streamlit Community Cloud เพราะดิสก์เป็นแบบชั่วคราว (ephemeral)
+#
+# วิธีทำให้ข้อมูลอยู่ถาวรจริง ๆ บน Streamlit Community Cloud:
+#   1) สมัครฐานข้อมูลฟรีบนคลาวด์ เช่น Supabase / Neon (Postgres ฟรี) หรือ Turso
+#      (SQLite แบบ hosted ฟรี)
+#   2) เพิ่ม secret ชื่อ DATABASE_URL ใน Streamlit Cloud → Settings → Secrets
+#      เช่น: DATABASE_URL = "postgresql://user:pass@host:5432/dbname"
+#   3) แค่นี้แอปจะเปลี่ยนไปอ่าน-เขียนฐานข้อมูลคลาวด์นั้นแทนโดยอัตโนมัติ และ
+#      ข้อมูลจะอยู่ถาวรไม่ว่าจะรีสตาร์ทเครื่อง/redeploy กี่ครั้งก็ตาม
+# ----------------------------------------------------------------------------
+try:
+    DATABASE_URL = st.secrets["DATABASE_URL"]
+except Exception:
+    DATABASE_URL = f"sqlite:///{DATA_DIR / 'portfolio.db'}"
 
-# ฐานข้อมูลจริงฝั่งเซิร์ฟเวอร์ (SQLite) — ข้อมูลทุกคนที่เข้าเว็บนี้ (ไม่ว่าจากเครื่อง/
-# เบราว์เซอร์ไหน) จะอ่าน-เขียนไฟล์ฐานข้อมูลเดียวกันบนเซิร์ฟเวอร์ ทำให้เห็นข้อมูล
-# ชุดเดียวกันเสมอ (ต่างจาก localStorage ที่ผูกกับเบราว์เซอร์ของแต่ละคน)
-DB_PATH = DATA_DIR / "portfolio.db"
+USING_LOCAL_SQLITE = DATABASE_URL.startswith("sqlite")
+
+
+@st.cache_resource
+def get_connection():
+    return st.connection("portfolio_db", type="sql", url=DATABASE_URL)
+
+
+conn = get_connection()
 
 DEFAULT_PROFILE = {
     "name_th": "ชื่อ-นามสกุล (ภาษาไทย)",
@@ -79,157 +101,189 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------------------------------
-# STORAGE HELPERS (ฐานข้อมูล SQLite ฝั่งเซิร์ฟเวอร์)
+# STORAGE HELPERS (อ่าน/เขียนฐานข้อมูลผ่าน SQLAlchemy — ใช้ได้ทั้ง SQLite ในเครื่อง
+# และฐานข้อมูลคลาวด์ เช่น Postgres โดยไม่ต้องแก้โค้ดส่วนนี้เลย)
 # ----------------------------------------------------------------------------
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """CREATE TABLE IF NOT EXISTS profile (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            name_th TEXT, name_en TEXT, role TEXT,
-            department TEXT, university TEXT,
-            company TEXT, company_unit TEXT, photo TEXT
-        )"""
-    )
-    cur.execute(
-        """CREATE TABLE IF NOT EXISTS works (
-            id TEXT PRIMARY KEY,
-            title TEXT, type TEXT,
-            month_key TEXT, month_label TEXT,
-            date TEXT, description TEXT, created_at TEXT
-        )"""
-    )
-    cur.execute(
-        """CREATE TABLE IF NOT EXISTS work_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            work_id TEXT, file_path TEXT
-        )"""
-    )
-    cur.execute(
-        """CREATE TABLE IF NOT EXISTS projects (
-            id TEXT PRIMARY KEY,
-            title TEXT, summary TEXT, date TEXT,
-            file TEXT, created_at TEXT
-        )"""
-    )
-    cur.execute("SELECT COUNT(*) FROM profile WHERE id = 1")
-    if cur.fetchone()[0] == 0:
-        cur.execute(
-            """INSERT INTO profile
-               (id, name_th, name_en, role, department, university, company, company_unit, photo)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                DEFAULT_PROFILE["name_th"], DEFAULT_PROFILE["name_en"], DEFAULT_PROFILE["role"],
-                DEFAULT_PROFILE["department"], DEFAULT_PROFILE["university"],
-                DEFAULT_PROFILE["company"], DEFAULT_PROFILE["company_unit"], DEFAULT_PROFILE["photo"],
-            ),
-        )
-    conn.commit()
-    conn.close()
+    with conn.session as s:
+        s.execute(text(
+            """CREATE TABLE IF NOT EXISTS profile (
+                id INTEGER PRIMARY KEY,
+                name_th TEXT, name_en TEXT, role TEXT,
+                department TEXT, university TEXT,
+                company TEXT, company_unit TEXT,
+                photo_data TEXT
+            )"""
+        ))
+        s.execute(text(
+            """CREATE TABLE IF NOT EXISTS works (
+                id TEXT PRIMARY KEY,
+                title TEXT, type TEXT,
+                month_key TEXT, month_label TEXT,
+                date TEXT, description TEXT, created_at TEXT
+            )"""
+        ))
+        s.execute(text(
+            """CREATE TABLE IF NOT EXISTS work_files (
+                id TEXT PRIMARY KEY,
+                work_id TEXT, data_uri TEXT
+            )"""
+        ))
+        s.execute(text(
+            """CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                title TEXT, summary TEXT, date TEXT,
+                file_name TEXT, file_data TEXT, created_at TEXT
+            )"""
+        ))
+        s.commit()
+
+        exists = s.execute(text("SELECT COUNT(*) FROM profile WHERE id = 1")).scalar()
+        if not exists:
+            s.execute(
+                text(
+                    """INSERT INTO profile
+                       (id, name_th, name_en, role, department, university, company, company_unit, photo_data)
+                       VALUES (1, :name_th, :name_en, :role, :department, :university, :company, :company_unit, :photo_data)"""
+                ),
+                {
+                    "name_th": DEFAULT_PROFILE["name_th"],
+                    "name_en": DEFAULT_PROFILE["name_en"],
+                    "role": DEFAULT_PROFILE["role"],
+                    "department": DEFAULT_PROFILE["department"],
+                    "university": DEFAULT_PROFILE["university"],
+                    "company": DEFAULT_PROFILE["company"],
+                    "company_unit": DEFAULT_PROFILE["company_unit"],
+                    "photo_data": None,
+                },
+            )
+            s.commit()
 
 
 def get_profile():
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
-    conn.close()
-    return dict(row) if row else DEFAULT_PROFILE.copy()
+    with conn.session as s:
+        row = s.execute(text("SELECT * FROM profile WHERE id = 1")).mappings().fetchone()
+    if not row:
+        p = DEFAULT_PROFILE.copy()
+        return p
+    p = dict(row)
+    p["photo"] = p.pop("photo_data", None)
+    return p
 
 
 def save_profile(p):
-    conn = get_conn()
-    conn.execute(
-        """UPDATE profile SET name_th=?, name_en=?, role=?, department=?,
-           university=?, company=?, company_unit=?, photo=? WHERE id = 1""",
-        (
-            p["name_th"], p["name_en"], p["role"], p["department"],
-            p["university"], p["company"], p["company_unit"], p["photo"],
-        ),
-    )
-    conn.commit()
-    conn.close()
+    with conn.session as s:
+        s.execute(
+            text(
+                """UPDATE profile SET name_th=:name_th, name_en=:name_en, role=:role,
+                   department=:department, university=:university, company=:company,
+                   company_unit=:company_unit, photo_data=:photo_data WHERE id = 1"""
+            ),
+            {
+                "name_th": p["name_th"], "name_en": p["name_en"], "role": p["role"],
+                "department": p["department"], "university": p["university"],
+                "company": p["company"], "company_unit": p["company_unit"],
+                "photo_data": p.get("photo"),
+            },
+        )
+        s.commit()
 
 
 def get_works():
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM works").fetchall()
-    works = []
-    for row in rows:
-        w = dict(row)
-        files = conn.execute(
-            "SELECT file_path FROM work_files WHERE work_id = ? ORDER BY id", (w["id"],)
-        ).fetchall()
-        w["files"] = [f["file_path"] for f in files]
-        works.append(w)
-    conn.close()
+    with conn.session as s:
+        rows = s.execute(text("SELECT * FROM works")).mappings().fetchall()
+        works = []
+        for row in rows:
+            w = dict(row)
+            files = s.execute(
+                text("SELECT data_uri FROM work_files WHERE work_id = :wid ORDER BY id"),
+                {"wid": w["id"]},
+            ).mappings().fetchall()
+            w["files"] = [f["data_uri"] for f in files]
+            works.append(w)
     return works
 
 
 def add_work(item):
-    conn = get_conn()
-    conn.execute(
-        """INSERT INTO works (id, title, type, month_key, month_label, date, description, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            item["id"], item["title"], item["type"], item["month_key"], item["month_label"],
-            item["date"], item["description"], item["created_at"],
-        ),
-    )
-    for fp in item.get("files", []):
-        conn.execute("INSERT INTO work_files (work_id, file_path) VALUES (?, ?)", (item["id"], fp))
-    conn.commit()
-    conn.close()
+    with conn.session as s:
+        s.execute(
+            text(
+                """INSERT INTO works (id, title, type, month_key, month_label, date, description, created_at)
+                   VALUES (:id, :title, :type, :month_key, :month_label, :date, :description, :created_at)"""
+            ),
+            {
+                "id": item["id"], "title": item["title"], "type": item["type"],
+                "month_key": item["month_key"], "month_label": item["month_label"],
+                "date": item["date"], "description": item["description"],
+                "created_at": item["created_at"],
+            },
+        )
+        for data_uri in item.get("files", []):
+            s.execute(
+                text("INSERT INTO work_files (id, work_id, data_uri) VALUES (:id, :work_id, :data_uri)"),
+                {"id": uuid.uuid4().hex, "work_id": item["id"], "data_uri": data_uri},
+            )
+        s.commit()
 
 
 def delete_work(work_id):
-    conn = get_conn()
-    conn.execute("DELETE FROM works WHERE id = ?", (work_id,))
-    conn.execute("DELETE FROM work_files WHERE work_id = ?", (work_id,))
-    conn.commit()
-    conn.close()
+    with conn.session as s:
+        s.execute(text("DELETE FROM works WHERE id = :id"), {"id": work_id})
+        s.execute(text("DELETE FROM work_files WHERE work_id = :id"), {"id": work_id})
+        s.commit()
 
 
 def get_projects():
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM projects").fetchall()
-    conn.close()
+    with conn.session as s:
+        rows = s.execute(text("SELECT * FROM projects")).mappings().fetchall()
     return [dict(r) for r in rows]
 
 
 def add_project(item):
-    conn = get_conn()
-    conn.execute(
-        "INSERT INTO projects (id, title, summary, date, file, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (item["id"], item["title"], item["summary"], item["date"], item.get("file"), item["created_at"]),
-    )
-    conn.commit()
-    conn.close()
+    with conn.session as s:
+        s.execute(
+            text(
+                """INSERT INTO projects (id, title, summary, date, file_name, file_data, created_at)
+                   VALUES (:id, :title, :summary, :date, :file_name, :file_data, :created_at)"""
+            ),
+            {
+                "id": item["id"], "title": item["title"], "summary": item["summary"],
+                "date": item["date"], "file_name": item.get("file_name"),
+                "file_data": item.get("file_data"), "created_at": item["created_at"],
+            },
+        )
+        s.commit()
 
 
 def delete_project(project_id):
-    conn = get_conn()
-    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-    conn.commit()
-    conn.close()
+    with conn.session as s:
+        s.execute(text("DELETE FROM projects WHERE id = :id"), {"id": project_id})
+        s.commit()
 
 
 init_db()
 
 
-def save_uploaded_file(uploaded_file, target_dir: Path) -> str:
-    """Save an uploaded file with a unique name, return the relative path (str)."""
-    ext = Path(uploaded_file.name).suffix
-    fname = f"{uuid.uuid4().hex}{ext}"
-    fpath = target_dir / fname
-    with open(fpath, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    return str(fpath)
+def uploaded_image_to_data_uri(uploaded_file) -> str:
+    """แปลงไฟล์รูปภาพที่อัปโหลดเป็น data URI (base64) เก็บลงฐานข้อมูลโดยตรง
+    (ไม่เขียนลงดิสก์ของเซิร์ฟเวอร์เลย จึงไม่หายแม้เครื่อง/คอนเทนเนอร์รีสตาร์ท)"""
+    ext = Path(uploaded_file.name).suffix.lstrip(".").lower() or "png"
+    if ext == "jpg":
+        ext = "jpeg"
+    b64 = base64.b64encode(uploaded_file.getvalue()).decode()
+    return f"data:image/{ext};base64,{b64}"
+
+
+def uploaded_file_to_b64(uploaded_file) -> str:
+    """แปลงไฟล์ (เช่น PDF) ที่อัปโหลดเป็น base64 ล้วน ๆ (ไม่มี prefix data:...)
+    สำหรับเก็บลงฐานข้อมูลแล้วดึงกลับมาทำเป็นไฟล์ดาวน์โหลดภายหลัง"""
+    return base64.b64encode(uploaded_file.getvalue()).decode()
+
+
+def b64_to_bytes(b64_str) -> bytes:
+    if not b64_str:
+        return b""
+    return base64.b64decode(b64_str)
 
 
 def init_state():
@@ -384,12 +438,12 @@ st.markdown(
     .work-card, .project-card {
         background: white;
         border-radius: 14px;
-        padding: 16px;
+        padding: 12px;
         box-shadow: 0 1px 4px rgba(0,0,0,0.08);
         margin-bottom: 14px;
     }
-    .work-title { font-weight: 700; font-size: 16px; margin-bottom: 2px;}
-    .work-meta { font-size: 12px; color: #888; margin-bottom: 8px;}
+    .work-title { font-weight: 700; font-size: 14px; margin-bottom: 2px; line-height:1.3;}
+    .work-meta { font-size: 11px; color: #888; margin-bottom: 6px; line-height:1.5;}
 
     /* กล่องที่ครอบ iframe ของแกลเลอรีรูปภาพ (render_work_gallery) ให้ชิดขอบการ์ด */
     div[data-testid="stIFrame"] { margin-bottom: 6px; }
@@ -533,7 +587,7 @@ def profile_edit_form():
             p["company"] = company
             p["company_unit"] = company_unit
             if photo_file is not None:
-                p["photo"] = save_uploaded_file(photo_file, PROFILE_IMG_DIR)
+                p["photo"] = uploaded_image_to_data_uri(photo_file)
             save_profile(p)
             st.session_state.edit_profile = False
             st.success("บันทึกโปรไฟล์เรียบร้อยแล้ว")
@@ -587,14 +641,11 @@ def home_page():
                         st.rerun()
 
         with right:
-            if p.get("photo") and os.path.exists(p["photo"]):
-                img_bytes = Path(p["photo"]).read_bytes()
-                b64 = base64.b64encode(img_bytes).decode()
-                ext = Path(p["photo"]).suffix.lstrip(".") or "png"
+            if p.get("photo"):
                 st.markdown(
                     f"""
                     <div class="profile-photo-frame">
-                        <img src="data:image/{ext};base64,{b64}" />
+                        <img src="{p['photo']}" />
                     </div>
                     <div class="photo-caption">คลิกที่รูปเพื่อเปลี่ยน</div>
                     """,
@@ -655,9 +706,10 @@ def add_work_form():
                 file_paths = []
                 if work_type == "รูปภาพ" and uploaded_images:
                     for img in uploaded_images:
-                        file_paths.append(save_uploaded_file(img, WORKS_DIR))
+                        file_paths.append(uploaded_image_to_data_uri(img))
                 elif work_type == "PDF" and uploaded_pdf is not None:
-                    file_paths.append(save_uploaded_file(uploaded_pdf, WORKS_DIR))
+                    pdf_b64 = uploaded_file_to_b64(uploaded_pdf)
+                    file_paths.append(f"data:application/pdf;base64,{pdf_b64}")
 
                 item = {
                     "id": uuid.uuid4().hex,
@@ -681,22 +733,16 @@ def add_work_form():
             st.rerun()
 
 
-def _image_to_data_uri(path):
-    ext = Path(path).suffix.lstrip(".").lower() or "png"
-    if ext == "jpg":
-        ext = "jpeg"
-    b64 = base64.b64encode(Path(path).read_bytes()).decode()
-    return f"data:image/{ext};base64,{b64}"
-
-
 def render_work_gallery(files, work_id):
     """แสดงรูปเด่น (รูปแรก) สูง 180px พร้อมป้าย '+N รูป' ทับมุม
     กดแล้วเปิด Lightbox เต็มจอ เลื่อนดูรูปทั้งหมดได้ด้วยปุ่ม ‹ › (หรือปุ่มลูกศร
     บนคีย์บอร์ด) มีแถบรูปย่อด้านล่างและตัวนับ 'x / N'
+    หมายเหตุ: files เป็น data URI (base64) ที่ดึงมาจากฐานข้อมูลโดยตรงอยู่แล้ว
+    ไม่ต้องอ่านจากไฟล์บนดิสก์อีกต่อไป
     """
     if not files:
         return
-    data_uris = [_image_to_data_uri(f) for f in files]
+    data_uris = files
     total = len(data_uris)
     images_json = json.dumps(data_uris)
 
@@ -715,15 +761,15 @@ def render_work_gallery(files, work_id):
       * {{ box-sizing: border-box; }}
       body {{ margin:0; font-family:'Sarabun','Noto Sans Thai',sans-serif; background:transparent; }}
       .featured-wrap {{ position:relative; cursor:pointer; border-radius:12px; overflow:hidden; }}
-      .featured-img {{ width:100%; height:180px; object-fit:cover; display:block; transition:filter .15s; }}
+      .featured-img {{ width:100%; height:130px; object-fit:cover; display:block; transition:filter .15s; }}
       .featured-wrap:hover .featured-img {{ filter:brightness(0.85); }}
-      .badge {{ position:absolute; bottom:8px; right:8px; background:rgba(0,0,0,0.6); color:#fff;
-                 border-radius:6px; font-size:12px; font-weight:600; padding:3px 9px; }}
+      .badge {{ position:absolute; bottom:6px; right:6px; background:rgba(0,0,0,0.6); color:#fff;
+                 border-radius:6px; font-size:11px; font-weight:600; padding:2px 7px; }}
       .hint {{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
                 opacity:0; transition:opacity .15s; }}
       .featured-wrap:hover .hint {{ opacity:1; }}
-      .hint span {{ color:#fff; font-size:13px; font-weight:600; background:rgba(0,0,0,0.45);
-                     border-radius:6px; padding:4px 10px; }}
+      .hint span {{ color:#fff; font-size:12px; font-weight:600; background:rgba(0,0,0,0.45);
+                     border-radius:6px; padding:3px 8px; }}
 
       .overlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,0.88); z-index:999999;
                    align-items:center; justify-content:center; flex-direction:column; gap:16px; }}
@@ -817,7 +863,7 @@ def render_work_gallery(files, work_id):
       </script>
     </body></html>
     """
-    components.html(html, height=180, scrolling=False)
+    components.html(html, height=130, scrolling=False)
 
 
 def _work_files(w):
@@ -934,20 +980,21 @@ def _portfolio_page_body():
         if not items:
             continue
         st.markdown(f"#### 🗓️ {month_label}  <span style='color:#999;font-size:13px;font-weight:400;'>({len(items)} ผลงาน)</span>", unsafe_allow_html=True)
-        cols = st.columns(2)
+        cols = st.columns(4)
         for i, w in enumerate(sorted(items, key=lambda x: (x.get("date", ""), x["created_at"]), reverse=True)):
-            with cols[i % 2]:
+            with cols[i % 4]:
                 st.markdown('<div class="work-card">', unsafe_allow_html=True)
-                files = [f for f in _work_files(w) if os.path.exists(f)]
+                files = [f for f in _work_files(w) if f]
                 if w["type"] == "รูปภาพ" and files:
                     render_work_gallery(files, w["id"])
                 elif w["type"] == "PDF" and files:
                     st.markdown("📄 **ไฟล์ PDF แนบอยู่**")
-                    with open(files[0], "rb") as f:
-                        st.download_button(
-                            "ดาวน์โหลด PDF", f, file_name=os.path.basename(files[0]),
-                            key=f"dl_{w['id']}", use_container_width=True,
-                        )
+                    pdf_b64 = files[0].split(",", 1)[-1] if "," in files[0] else files[0]
+                    st.download_button(
+                        "ดาวน์โหลด PDF", b64_to_bytes(pdf_b64),
+                        file_name=f"{w['title']}.pdf",
+                        key=f"dl_{w['id']}", use_container_width=True,
+                    )
                 st.markdown(f'<div class="work-title">{w["title"]}</div>', unsafe_allow_html=True)
                 date_str = format_thai_date(w.get("date", ""))
                 meta_parts = [f'🏷️ {w["type"]}', f'🗓️ {month_label}']
@@ -986,15 +1033,18 @@ def add_project_form():
             if not title:
                 st.error("กรุณากรอกชื่อโครงงาน")
             else:
-                file_path = None
+                file_name = None
+                file_data = None
                 if uploaded_file is not None:
-                    file_path = save_uploaded_file(uploaded_file, PROJECTS_DIR)
+                    file_name = uploaded_file.name
+                    file_data = uploaded_file_to_b64(uploaded_file)
                 item = {
                     "id": uuid.uuid4().hex,
                     "title": title,
                     "summary": summary,
                     "date": str(proj_date),
-                    "file": file_path,
+                    "file_name": file_name,
+                    "file_data": file_data,
                     "created_at": datetime.now().isoformat(),
                 }
                 st.session_state.show_add_project = False
@@ -1045,12 +1095,12 @@ def _project_page_body():
         st.markdown(f'<div class="work-meta">📅 {format_thai_date(p["date"])}</div>', unsafe_allow_html=True)
         if p.get("summary"):
             st.write(p["summary"])
-        if p.get("file") and os.path.exists(p["file"]):
-            with open(p["file"], "rb") as f:
-                st.download_button(
-                    "📥 ดาวน์โหลดรายงาน", f, file_name=os.path.basename(p["file"]),
-                    key=f"dl_proj_{p['id']}",
-                )
+        if p.get("file_data"):
+            st.download_button(
+                "📥 ดาวน์โหลดรายงาน", b64_to_bytes(p["file_data"]),
+                file_name=p.get("file_name") or f"{p['title']}.pdf",
+                key=f"dl_proj_{p['id']}",
+            )
         if st.button("🗑️ ลบโครงงาน", key=f"del_proj_{p['id']}"):
             delete_project(p["id"])
             st.rerun()
