@@ -126,7 +126,7 @@ def init_db():
         s.execute(text(
             """CREATE TABLE IF NOT EXISTS work_files (
                 id TEXT PRIMARY KEY,
-                work_id TEXT, data_uri TEXT
+                work_id TEXT, data_uri TEXT, position INTEGER DEFAULT 0
             )"""
         ))
         s.execute(text(
@@ -137,6 +137,15 @@ def init_db():
             )"""
         ))
         s.commit()
+
+        # migration: ฐานข้อมูลที่ deploy ไว้ก่อนหน้านี้อาจยังไม่มีคอลัมน์ position
+        # (เพิ่มเข้ามาทีหลังเพื่อรักษาลำดับรูปภาพให้ถูกต้อง) ลองเพิ่มคอลัมน์ให้
+        # เฉย ๆ ถ้ามีอยู่แล้วจะ error ซึ่งไม่เป็นไร ข้ามไปได้เลย
+        try:
+            s.execute(text("ALTER TABLE work_files ADD COLUMN position INTEGER DEFAULT 0"))
+            s.commit()
+        except Exception:
+            s.rollback()
 
         exists = s.execute(text("SELECT COUNT(*) FROM profile WHERE id = 1")).scalar()
         if not exists:
@@ -160,6 +169,7 @@ def init_db():
             s.commit()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_profile():
     with conn.session as s:
         row = s.execute(text("SELECT * FROM profile WHERE id = 1")).mappings().fetchone()
@@ -187,21 +197,35 @@ def save_profile(p):
             },
         )
         s.commit()
+    get_profile.clear()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_works():
+    # ใช้ LEFT JOIN คิวรีเดียวแทนการวน query แยกทีละผลงาน (เดิมเป็น N+1 queries)
+    # ลดจำนวนรอบไป-กลับกับฐานข้อมูลบนคลาวด์ ซึ่งเป็นสาเหตุหลักที่ทำให้เว็บช้า
     with conn.session as s:
-        rows = s.execute(text("SELECT * FROM works")).mappings().fetchall()
-        works = []
-        for row in rows:
+        rows = s.execute(text(
+            """SELECT w.id, w.title, w.type, w.month_key, w.month_label, w.date,
+                      w.description, w.created_at, wf.data_uri
+               FROM works w
+               LEFT JOIN work_files wf ON wf.work_id = w.id
+               ORDER BY w.created_at DESC, wf.position"""
+        )).mappings().fetchall()
+
+    works_by_id = {}
+    order = []
+    for row in rows:
+        wid = row["id"]
+        if wid not in works_by_id:
             w = dict(row)
-            files = s.execute(
-                text("SELECT data_uri FROM work_files WHERE work_id = :wid ORDER BY id"),
-                {"wid": w["id"]},
-            ).mappings().fetchall()
-            w["files"] = [f["data_uri"] for f in files]
-            works.append(w)
-    return works
+            w.pop("data_uri", None)
+            w["files"] = []
+            works_by_id[wid] = w
+            order.append(wid)
+        if row["data_uri"]:
+            works_by_id[wid]["files"].append(row["data_uri"])
+    return [works_by_id[wid] for wid in order]
 
 
 def add_work(item):
@@ -218,12 +242,13 @@ def add_work(item):
                 "created_at": item["created_at"],
             },
         )
-        for data_uri in item.get("files", []):
+        for position, data_uri in enumerate(item.get("files", [])):
             s.execute(
-                text("INSERT INTO work_files (id, work_id, data_uri) VALUES (:id, :work_id, :data_uri)"),
-                {"id": uuid.uuid4().hex, "work_id": item["id"], "data_uri": data_uri},
+                text("INSERT INTO work_files (id, work_id, data_uri, position) VALUES (:id, :work_id, :data_uri, :position)"),
+                {"id": uuid.uuid4().hex, "work_id": item["id"], "data_uri": data_uri, "position": position},
             )
         s.commit()
+    get_works.clear()
 
 
 def delete_work(work_id):
@@ -231,11 +256,13 @@ def delete_work(work_id):
         s.execute(text("DELETE FROM works WHERE id = :id"), {"id": work_id})
         s.execute(text("DELETE FROM work_files WHERE work_id = :id"), {"id": work_id})
         s.commit()
+    get_works.clear()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_projects():
     with conn.session as s:
-        rows = s.execute(text("SELECT * FROM projects")).mappings().fetchall()
+        rows = s.execute(text("SELECT * FROM projects ORDER BY created_at DESC")).mappings().fetchall()
     return [dict(r) for r in rows]
 
 
@@ -253,25 +280,56 @@ def add_project(item):
             },
         )
         s.commit()
+    get_projects.clear()
 
 
 def delete_project(project_id):
     with conn.session as s:
         s.execute(text("DELETE FROM projects WHERE id = :id"), {"id": project_id})
         s.commit()
+    get_projects.clear()
 
 
 init_db()
 
 
-def uploaded_image_to_data_uri(uploaded_file) -> str:
+# ----------------------------------------------------------------------------
+# ย่อขนาด + บีบอัดรูปภาพก่อนเก็บลงฐานข้อมูล — ตัวการหลักที่ทำให้เว็บช้าคือรูปภาพ
+# ต้นฉบับ (หลาย MB ต่อรูป) ถูกแปลงเป็น base64 แล้วโอนไป-กลับกับฐานข้อมูลคลาวด์
+# ทุกครั้งที่โหลดหน้า Portfolio ยิ่งมีผลงาน/รูปเยอะยิ่งช้ามาก การย่อขนาดรูปก่อน
+# บันทึกช่วยลดปริมาณข้อมูลลงได้หลายสิบเท่า ทำให้หน้าเว็บโหลดเร็วขึ้นอย่างเห็นได้ชัด
+# ----------------------------------------------------------------------------
+MAX_IMAGE_DIM = 1280       # ความกว้าง/สูงสูงสุดของรูปผลงาน (พิกเซล)
+PROFILE_IMAGE_DIM = 600    # รูปโปรไฟล์เล็กกว่า ไม่ต้องเก็บความละเอียดสูง
+IMAGE_QUALITY = 72         # คุณภาพ JPEG (0-100) — 70-75 คือจุดสมดุลระหว่างขนาดไฟล์กับความคมชัด
+
+
+def _compress_image_bytes(raw_bytes: bytes, max_dim: int = MAX_IMAGE_DIM, quality: int = IMAGE_QUALITY) -> bytes:
+    try:
+        from PIL import Image
+        import io
+
+        img = Image.open(io.BytesIO(raw_bytes))
+        img = img.convert("RGB")  # ตัด alpha channel เพื่อบันทึกเป็น JPEG ได้
+        w, h = img.size
+        if max(w, h) > max_dim:
+            ratio = max_dim / max(w, h)
+            img = img.resize((max(1, int(w * ratio)), max(1, int(h * ratio))), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        # ถ้าแปลง/ย่อไม่ได้ (ไฟล์เสียหรือไม่รองรับ) ใช้ไฟล์ต้นฉบับไปก่อนดีกว่าทำให้แอปพัง
+        return raw_bytes
+
+
+def uploaded_image_to_data_uri(uploaded_file, max_dim: int = MAX_IMAGE_DIM) -> str:
     """แปลงไฟล์รูปภาพที่อัปโหลดเป็น data URI (base64) เก็บลงฐานข้อมูลโดยตรง
-    (ไม่เขียนลงดิสก์ของเซิร์ฟเวอร์เลย จึงไม่หายแม้เครื่อง/คอนเทนเนอร์รีสตาร์ท)"""
-    ext = Path(uploaded_file.name).suffix.lstrip(".").lower() or "png"
-    if ext == "jpg":
-        ext = "jpeg"
-    b64 = base64.b64encode(uploaded_file.getvalue()).decode()
-    return f"data:image/{ext};base64,{b64}"
+    (ไม่เขียนลงดิสก์ของเซิร์ฟเวอร์เลย จึงไม่หายแม้เครื่อง/คอนเทนเนอร์รีสตาร์ท)
+    ก่อนเก็บจะย่อขนาด + บีบอัดเป็น JPEG คุณภาพพอเหมาะ เพื่อให้เว็บโหลดเร็วขึ้น"""
+    compressed = _compress_image_bytes(uploaded_file.getvalue(), max_dim=max_dim)
+    b64 = base64.b64encode(compressed).decode()
+    return f"data:image/jpeg;base64,{b64}"
 
 
 def uploaded_file_to_b64(uploaded_file) -> str:
@@ -587,7 +645,7 @@ def profile_edit_form():
             p["company"] = company
             p["company_unit"] = company_unit
             if photo_file is not None:
-                p["photo"] = uploaded_image_to_data_uri(photo_file)
+                p["photo"] = uploaded_image_to_data_uri(photo_file, max_dim=PROFILE_IMAGE_DIM)
             save_profile(p)
             st.session_state.edit_profile = False
             st.success("บันทึกโปรไฟล์เรียบร้อยแล้ว")
