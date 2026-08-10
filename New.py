@@ -104,6 +104,22 @@ st.set_page_config(
 # STORAGE HELPERS (อ่าน/เขียนฐานข้อมูลผ่าน SQLAlchemy — ใช้ได้ทั้ง SQLite ในเครื่อง
 # และฐานข้อมูลคลาวด์ เช่น Postgres โดยไม่ต้องแก้โค้ดส่วนนี้เลย)
 # ----------------------------------------------------------------------------
+def _column_exists(s, table: str, column: str) -> bool:
+    """เช็คว่าคอลัมน์นี้มีอยู่ในตารางแล้วหรือยัง (รองรับทั้ง SQLite และ Postgres)
+    ใช้ก่อนรัน ALTER TABLE เพื่อไม่ให้เกิด error ซ้ำ ๆ ทุกครั้งที่แอป rerun"""
+    if USING_LOCAL_SQLITE:
+        rows = s.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        return any(r[1] == column for r in rows)
+    row = s.execute(
+        text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = :t AND column_name = :c"
+        ),
+        {"t": table, "c": column},
+    ).fetchone()
+    return row is not None
+
+
 def init_db():
     with conn.session as s:
         s.execute(text(
@@ -139,13 +155,12 @@ def init_db():
         s.commit()
 
         # migration: ฐานข้อมูลที่ deploy ไว้ก่อนหน้านี้อาจยังไม่มีคอลัมน์ position
-        # (เพิ่มเข้ามาทีหลังเพื่อรักษาลำดับรูปภาพให้ถูกต้อง) ลองเพิ่มคอลัมน์ให้
-        # เฉย ๆ ถ้ามีอยู่แล้วจะ error ซึ่งไม่เป็นไร ข้ามไปได้เลย
-        try:
+        # (เพิ่มเข้ามาทีหลังเพื่อรักษาลำดับรูปภาพให้ถูกต้อง) เช็คก่อนว่ามีคอลัมน์
+        # อยู่แล้วหรือยัง ค่อยเพิ่ม — ไม่ใช้วิธีลองแล้วปล่อยให้ error+rollback ทุกครั้ง
+        # เพราะทำให้เกิด query ที่ล้มเหลวซ้ำ ๆ ทุกการโต้ตอบ ส่งผลให้แอปช้าลงจริง
+        if not _column_exists(s, "work_files", "position"):
             s.execute(text("ALTER TABLE work_files ADD COLUMN position INTEGER DEFAULT 0"))
             s.commit()
-        except Exception:
-            s.rollback()
 
         exists = s.execute(text("SELECT COUNT(*) FROM profile WHERE id = 1")).scalar()
         if not exists:
@@ -290,7 +305,17 @@ def delete_project(project_id):
     get_projects.clear()
 
 
-init_db()
+@st.cache_resource
+def _run_init_db_once():
+    # ห่อด้วย st.cache_resource เพื่อให้ init_db() รันแค่ครั้งเดียวตอนแอปเริ่มทำงาน
+    # (ใช้ร่วมกันทุก session/ทุกคนที่เข้าเว็บ) ไม่ใช่รันซ้ำทุกครั้งที่มีคนคลิก/พิมพ์
+    # อะไรก็ตาม (ปกติ Streamlit จะรันทั้งไฟล์ใหม่ทุกครั้งที่มีการโต้ตอบ) การรันซ้ำ
+    # ทุกครั้งทำให้เกิด query ตรวจ/สร้างตารางเพิ่มโดยไม่จำเป็นหลายรอบ ส่งผลให้ช้าลง
+    init_db()
+    return True
+
+
+_run_init_db_once()
 
 
 # ----------------------------------------------------------------------------
