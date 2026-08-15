@@ -428,7 +428,7 @@ st.markdown(
         color: #eafff2;
         border: none;
         font-weight: 600;
-        font-size: 14.5px;
+        font-size: 16px;
         border-radius: 20px;
         padding: 8px 18px;
         box-shadow: none;
@@ -451,8 +451,8 @@ st.markdown(
     .st-key-edit_profile_btn .stButton > button:hover {
         background: rgba(255,255,255,0.24) !important;
     }
-    .topbar-title { font-size: 19px; font-weight: 800; line-height: 1.2; }
-    .topbar-sub { font-size: 12px; opacity: 0.85; margin-top: -2px;}
+    .topbar-title { font-size: 21px; font-weight: 800; line-height: 1.2; }
+    .topbar-sub { font-size: 13.5px; opacity: 0.85; margin-top: -2px;}
 
     /* ---------- Home hero (full-bleed page background) ---------- */
     .st-key-home_hero {
@@ -466,17 +466,18 @@ st.markdown(
         background: rgba(255,255,255,0.12);
         padding: 6px 16px;
         border-radius: 20px;
-        font-size: 13px;
+        font-size: 14.5px;
         margin-bottom: 22px;
     }
-    .hero-name-th { font-size: 38px; font-weight: 800; margin-bottom: 4px;}
-    .hero-name-en { font-size: 19px; color: #8fe3c0; margin-bottom: 26px;}
-    .info-row { font-size: 16px; font-weight: 700; margin-top: 18px;}
-    .info-sub { font-size: 13px; color: #cfe9de; font-weight: 400;}
+    .hero-name-th { font-size: 44px; font-weight: 800; margin-bottom: 4px;}
+    .hero-name-en { font-size: 21px; color: #8fe3c0; margin-bottom: 26px;}
+    .info-row { font-size: 18px; font-weight: 700; margin-top: 18px;}
+    .info-sub { font-size: 14.5px; color: #cfe9de; font-weight: 400;}
 
     .st-key-home_hero .stButton > button {
         border-radius: 8px;
         font-weight: 600;
+        font-size: 16px;
         height: 46px;
     }
     .st-key-hero_btn_primary .stButton > button {
@@ -486,18 +487,28 @@ st.markdown(
         background: transparent; color: white; border: 1px solid rgba(255,255,255,0.5);
     }
 
+    /* กล่องรูปโปรไฟล์ - ให้ขนาดกล่องพอดีกับรูป ไม่ยืดเต็มความกว้างคอลัมน์จนดูลอย */
     .profile-photo-frame {
         background: white;
         border-radius: 14px;
         padding: 8px;
         box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        max-width: 320px;
+        margin: 0 auto;
     }
-    .profile-photo-frame img { border-radius: 8px; display: block; width: 100%; }
-    .photo-caption { text-align: center; font-size: 12.5px; color: #cfe9de; margin-top: 10px; }
+    .profile-photo-frame img {
+        border-radius: 8px;
+        display: block;
+        width: 100%;
+        height: auto;
+    }
+    .photo-caption { text-align: center; font-size: 14px; color: #cfe9de; margin-top: 10px; }
     .photo-placeholder {
         background: rgba(255,255,255,0.08);
         border: 1px dashed rgba(255,255,255,0.4);
         border-radius: 14px;
+        max-width: 320px;
+        margin: 0 auto;
         padding: 90px 10px;
         text-align: center;
         color: #dfeee6;
@@ -515,8 +526,8 @@ st.markdown(
         box-shadow: 0 1px 4px rgba(0,0,0,0.08);
         text-align: left;
     }
-    .stat-num { font-size: 26px; font-weight: 800; color: #111; }
-    .stat-label { font-size: 13px; color: #666; }
+    .stat-num { font-size: 29px; font-weight: 800; color: #111; }
+    .stat-label { font-size: 15px; color: #666; }
 
     .work-card, .project-card {
         background: white;
@@ -525,8 +536,8 @@ st.markdown(
         box-shadow: 0 1px 4px rgba(0,0,0,0.08);
         margin-bottom: 14px;
     }
-    .work-title { font-weight: 700; font-size: 14px; margin-bottom: 2px; line-height:1.3;}
-    .work-meta { font-size: 11px; color: #888; margin-bottom: 6px; line-height:1.5;}
+    .work-title { font-weight: 700; font-size: 17px; margin-bottom: 3px; line-height:1.35;}
+    .work-meta { font-size: 13.5px; color: #888; margin-bottom: 8px; line-height:1.6;}
 
     /* กล่องที่ครอบ iframe ของแกลเลอรีรูปภาพ (render_work_gallery) ให้ชิดขอบการ์ด */
     div[data-testid="stIFrame"] { margin-bottom: 6px; }
@@ -547,6 +558,7 @@ st.markdown(
         border: 1px solid #cfd8d4 !important;
         border-radius: 8px !important;
         caret-color: #111111 !important;
+        font-size: 16px !important;
     }
     div[data-testid="stTextInput"] input::placeholder,
     div[data-testid="stTextArea"] textarea::placeholder {
@@ -558,11 +570,13 @@ st.markdown(
         color: #111111 !important;
         border: 1px solid #cfd8d4 !important;
         border-radius: 8px !important;
+        font-size: 16px !important;
     }
     div[data-testid="stSelectbox"] ul,
     div[data-testid="stMultiSelect"] ul {
         background-color: #ffffff !important;
         color: #111111 !important;
+        font-size: 15.5px !important;
     }
     div[data-testid="stFileUploaderDropzone"] {
         background-color: #ffffff !important;
@@ -571,6 +585,7 @@ st.markdown(
     }
     div[data-testid="stFileUploaderDropzone"] * {
         color: #333333 !important;
+        font-size: 15px !important;
     }
     div[data-testid="stDateInput"] svg { fill: #333333 !important; }
 
@@ -579,6 +594,19 @@ st.markdown(
     .stForm label {
         color: #1c231f !important;
         font-weight: 600 !important;
+        font-size: 15px !important;
+    }
+
+    /* ปุ่มต่าง ๆ ในหน้า Portfolio/Project (ทั้งหมด/รูปภาพ/PDF/เพิ่มผลงาน/ลบ ฯลฯ) */
+    .st-key-page_content .stButton > button {
+        font-size: 15.5px !important;
+    }
+    /* ข้อความรายละเอียดผลงาน/โครงงานที่แสดงด้วย st.write, หัวข้อเดือน ฯลฯ */
+    .st-key-page_content p {
+        font-size: 15.5px !important;
+    }
+    .st-key-page_content h4 {
+        font-size: 21px !important;
     }
     </style>
     """,
@@ -1062,7 +1090,7 @@ def _portfolio_page_body():
         items = groups.get(month_label, [])
         if not items:
             continue
-        st.markdown(f"#### 🗓️ {month_label}  <span style='color:#999;font-size:13px;font-weight:400;'>({len(items)} ผลงาน)</span>", unsafe_allow_html=True)
+        st.markdown(f"#### 🗓️ {month_label}  <span style='color:#999;font-size:15px;font-weight:400;'>({len(items)} ผลงาน)</span>", unsafe_allow_html=True)
         cols = st.columns(4)
         for i, w in enumerate(sorted(items, key=lambda x: (x.get("date", ""), x["created_at"]), reverse=True)):
             with cols[i % 4]:
