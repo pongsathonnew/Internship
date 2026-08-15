@@ -274,6 +274,50 @@ def delete_work(work_id):
     get_works.clear()
 
 
+def update_work(work_id, fields):
+    """แก้ไขข้อมูลพื้นฐานของผลงานที่บันทึกไว้แล้ว (ชื่อ/ประเภท/เดือน/วันที่/รายละเอียด)"""
+    with conn.session as s:
+        s.execute(
+            text(
+                """UPDATE works SET title=:title, type=:type, month_key=:month_key,
+                   month_label=:month_label, date=:date, description=:description
+                   WHERE id = :id"""
+            ),
+            {**fields, "id": work_id},
+        )
+        s.commit()
+    get_works.clear()
+
+
+def get_work_files_with_ids(work_id):
+    """ดึงไฟล์แนบของผลงาน 1 ชิ้น พร้อม id ของแต่ละไฟล์ (ใช้ตอนแก้ไข เพื่อให้ลบ
+    ไฟล์แต่ละอันแยกได้ — ต่างจาก get_works() ที่คืนแค่ data_uri เฉย ๆ)"""
+    with conn.session as s:
+        rows = s.execute(
+            text("SELECT id, data_uri FROM work_files WHERE work_id = :wid ORDER BY position"),
+            {"wid": work_id},
+        ).mappings().fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_work_file(file_id):
+    with conn.session as s:
+        s.execute(text("DELETE FROM work_files WHERE id = :id"), {"id": file_id})
+        s.commit()
+    get_works.clear()
+
+
+def add_work_files(work_id, data_uris, start_position=0):
+    with conn.session as s:
+        for i, uri in enumerate(data_uris):
+            s.execute(
+                text("INSERT INTO work_files (id, work_id, data_uri, position) VALUES (:id, :work_id, :data_uri, :position)"),
+                {"id": uuid.uuid4().hex, "work_id": work_id, "data_uri": uri, "position": start_position + i},
+            )
+        s.commit()
+    get_works.clear()
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_projects():
     with conn.session as s:
@@ -379,6 +423,8 @@ def init_state():
         st.session_state.edit_profile = False
     if "show_add_work" not in st.session_state:
         st.session_state.show_add_work = False
+    if "editing_work_id" not in st.session_state:
+        st.session_state.editing_work_id = None
     if "show_add_project" not in st.session_state:
         st.session_state.show_add_project = False
     if "work_filter" not in st.session_state:
@@ -844,6 +890,107 @@ def add_work_form():
             st.rerun()
 
 
+def edit_work_form(work_id):
+    works = get_works()
+    work = next((w for w in works if w["id"] == work_id), None)
+    if not work:
+        st.session_state.editing_work_id = None
+        return
+
+    st.subheader("✏️ แก้ไขผลงาน / กิจกรรม")
+    with st.form(f"edit_work_form_{work_id}"):
+        title = st.text_input("ชื่อผลงาน / กิจกรรม *", value=work.get("title", ""))
+
+        type_options = ["รูปภาพ", "PDF", "บทความ"]
+        month_options = [m["label"] for m in MONTH_CATEGORIES]
+        cur_type = work.get("type") if work.get("type") in type_options else type_options[0]
+        cur_month = work.get("month_label") if work.get("month_label") in month_options else month_options[0]
+        try:
+            cur_date = datetime.strptime(work.get("date", ""), "%Y-%m-%d").date()
+        except Exception:
+            cur_date = date.today()
+
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            work_type = st.selectbox("ประเภท", type_options, index=type_options.index(cur_type))
+        with col_b:
+            month_label = st.selectbox(
+                "หมวดหมู่เดือน (สหกิจศึกษา)", month_options, index=month_options.index(cur_month)
+            )
+        with col_c:
+            work_date = st.date_input("วันที่ทำกิจกรรม *", value=cur_date)
+        description = st.text_area("รายละเอียด", value=work.get("description", ""))
+
+        existing_files = get_work_files_with_ids(work_id) if work_type in ("รูปภาพ", "PDF") else []
+        remove_ids = []
+        new_images = []
+        new_pdf = None
+
+        if work_type == "รูปภาพ":
+            if existing_files:
+                st.caption("รูปเดิมที่แนบไว้ — ติ๊กช่องเพื่อลบรูปนั้นออก")
+                img_cols = st.columns(4)
+                for i, f in enumerate(existing_files):
+                    with img_cols[i % 4]:
+                        st.image(f["data_uri"], use_container_width=True)
+                        if st.checkbox("ลบรูปนี้", key=f"rm_work_img_{f['id']}"):
+                            remove_ids.append(f["id"])
+            new_images = st.file_uploader(
+                "เพิ่มรูปภาพใหม่ (ถ้ามี, เลือกได้หลายรูป)",
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+                key=f"new_work_imgs_{work_id}",
+            )
+        elif work_type == "PDF":
+            if existing_files:
+                st.caption("ไฟล์ PDF เดิมที่แนบไว้")
+                if st.checkbox("ลบไฟล์ PDF เดิมนี้", key=f"rm_work_pdf_{existing_files[0]['id']}"):
+                    remove_ids.append(existing_files[0]["id"])
+            new_pdf = st.file_uploader(
+                "แนบไฟล์ PDF ใหม่ (ถ้าต้องการแทนที่ไฟล์เดิม)", type=["pdf"], key=f"new_work_pdf_{work_id}"
+            )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            submitted = st.form_submit_button("💾 บันทึกการแก้ไข", use_container_width=True)
+        with c2:
+            cancel = st.form_submit_button("ยกเลิก", use_container_width=True)
+
+        if submitted:
+            if not title:
+                st.error("กรุณากรอกชื่อผลงาน")
+            else:
+                update_work(
+                    work_id,
+                    {
+                        "title": title,
+                        "type": work_type,
+                        "month_key": MONTH_LABEL_TO_KEY.get(month_label, ""),
+                        "month_label": month_label,
+                        "date": str(work_date),
+                        "description": description,
+                    },
+                )
+                for fid in remove_ids:
+                    delete_work_file(fid)
+
+                remaining_count = max(len(existing_files) - len(remove_ids), 0)
+                if work_type == "รูปภาพ" and new_images:
+                    new_uris = [uploaded_image_to_data_uri(img) for img in new_images]
+                    add_work_files(work_id, new_uris, start_position=remaining_count)
+                elif work_type == "PDF" and new_pdf is not None:
+                    pdf_b64 = uploaded_file_to_b64(new_pdf)
+                    add_work_files(work_id, [f"data:application/pdf;base64,{pdf_b64}"], start_position=0)
+
+                st.session_state.editing_work_id = None
+                st.success("บันทึกการแก้ไขเรียบร้อยแล้ว")
+                st.rerun()
+
+        if cancel:
+            st.session_state.editing_work_id = None
+            st.rerun()
+
+
 def render_work_gallery(files, work_id):
     """แสดงรูปเด่น (รูปแรก) สูง 180px พร้อมป้าย '+N รูป' ทับมุม
     กดแล้วเปิด Lightbox เต็มจอ เลื่อนดูรูปทั้งหมดได้ด้วยปุ่ม ‹ › (หรือปุ่มลูกศร
@@ -1049,9 +1196,14 @@ def _portfolio_page_body():
     with sc6:
         if st.button("➕ เพิ่มผลงาน", use_container_width=True, type="primary"):
             st.session_state.show_add_work = True
+            st.session_state.editing_work_id = None
 
     if st.session_state.show_add_work:
         add_work_form()
+        st.divider()
+
+    if st.session_state.editing_work_id:
+        edit_work_form(st.session_state.editing_work_id)
         st.divider()
 
     # filter + search
@@ -1117,9 +1269,16 @@ def _portfolio_page_body():
                 )
                 if w.get("description"):
                     st.write(w["description"])
-                if st.button("🗑️ ลบ", key=f"del_work_{w['id']}"):
-                    delete_work(w["id"])
-                    st.rerun()
+                bcol1, bcol2 = st.columns(2)
+                with bcol1:
+                    if st.button("✏️ แก้ไข", key=f"edit_work_{w['id']}", use_container_width=True):
+                        st.session_state.editing_work_id = w["id"]
+                        st.session_state.show_add_work = False
+                        st.rerun()
+                with bcol2:
+                    if st.button("🗑️ ลบ", key=f"del_work_{w['id']}", use_container_width=True):
+                        delete_work(w["id"])
+                        st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
         st.write("")
 
